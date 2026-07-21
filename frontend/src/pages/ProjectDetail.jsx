@@ -21,6 +21,8 @@ import {
   ArrowLeft, ExternalLink, Github, RefreshCw, Star, GitBranch, CircleDot, Trash2,
 } from "lucide-react";
 
+const HTTP_NOT_FOUND = 404;
+
 function CIBadge({ status }) {
   const map = {
     configured: { text: "CI configured", className: "border-emerald-400/40 text-emerald-300" },
@@ -52,7 +54,7 @@ export default function ProjectDetail() {
       setProject(p);
     } catch (err) {
       toast.error(err?.data?.detail || "Failed to load project");
-      if (err?.status === 404) navigate("/dashboard", { replace: true });
+      if (err?.status === HTTP_NOT_FOUND) navigate("/dashboard", { replace: true });
     } finally {
       setLoading(false);
     }

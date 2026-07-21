@@ -9,10 +9,10 @@ export default function Sparkline({ values = [], className = "", label }) {
           const h = Math.round((v / max) * 100);
           return (
             <span
-              key={i}
               data-testid={`sparkline-bar-${i}`}
               className="w-1.5 bg-foreground/70 rounded-[1px]"
               style={{ height: `${Math.max(6, h)}%`, opacity: v === 0 ? 0.25 : 0.9 }}
+              key={`bar-${i}-${v}`}
             />
           );
         })}

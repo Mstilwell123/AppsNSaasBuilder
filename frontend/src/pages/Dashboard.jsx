@@ -29,7 +29,8 @@ export default function Dashboard() {
         setLoading(false);
       }
     })();
-  }, []);
+    // api is a stable module import; safe to omit from deps but included to satisfy exhaustive-deps.
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const avgScore = (() => {
     const scored = projects.filter((p) => typeof p.latest_score?.score === "number");
@@ -80,64 +81,77 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {loading ? (
-        <div className="text-sm text-muted-foreground" data-testid="dashboard-loading">
-          Loading portfolio…
-        </div>
-      ) : !connected ? (
-        <Card
-          data-testid="dashboard-connect-cta"
-          className="bg-card border border-border rounded-sm p-10 flex items-start gap-4 max-w-2xl"
-        >
-          <div className="border border-border p-2 rounded-sm">
-            <Github className="h-5 w-5" />
-          </div>
-          <div className="flex-1">
-            <h2 className="font-display text-lg tracking-tight">Connect your GitHub</h2>
-            <p className="text-xs text-muted-foreground mt-1 max-w-md">
-              We only read metadata — never source. Read-only, public repos.
-            </p>
-            <Button
-              onClick={() => navigate("/connect")}
-              data-testid="dashboard-goto-connect"
-              className="mt-6 h-10 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors duration-200"
-            >
-              <Github className="h-3.5 w-3.5 mr-2" /> Connect GitHub
-            </Button>
-          </div>
-        </Card>
-      ) : projects.length === 0 ? (
-        <Card
-          data-testid="dashboard-empty"
-          className="bg-card border border-border rounded-sm p-10 flex items-start gap-4 max-w-2xl"
-        >
-          <div className="border border-border p-2 rounded-sm">
-            <Plus className="h-5 w-5" />
-          </div>
-          <div className="flex-1">
-            <h2 className="font-display text-lg tracking-tight">No repos tracked yet</h2>
-            <p className="text-xs text-muted-foreground mt-1">
-              Pick some public repos from your GitHub to start scoring.
-            </p>
-            <Link
-              to="/repos"
-              data-testid="dashboard-empty-pick-repos"
-              className="mt-6 inline-flex items-center gap-2 h-10 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors duration-200 px-4 text-sm font-medium"
-            >
-              <Plus className="h-3.5 w-3.5" /> Pick repos
-            </Link>
-          </div>
-        </Card>
-      ) : (
-        <div
-          data-testid="dashboard-grid"
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
-        >
-          {projects.map((p) => (
-            <ProjectCard key={p.id} project={p} />
-          ))}
-        </div>
-      )}
+      {renderBody({ loading, connected, projects, navigate })}
     </AppShell>
+  );
+}
+
+function renderBody({ loading, connected, projects, navigate }) {
+  if (loading) {
+    return (
+      <div className="text-sm text-muted-foreground" data-testid="dashboard-loading">
+        Loading portfolio…
+      </div>
+    );
+  }
+  if (!connected) {
+    return (
+      <Card
+        data-testid="dashboard-connect-cta"
+        className="bg-card border border-border rounded-sm p-10 flex items-start gap-4 max-w-2xl"
+      >
+        <div className="border border-border p-2 rounded-sm">
+          <Github className="h-5 w-5" />
+        </div>
+        <div className="flex-1">
+          <h2 className="font-display text-lg tracking-tight">Connect your GitHub</h2>
+          <p className="text-xs text-muted-foreground mt-1 max-w-md">
+            We only read metadata — never source. Read-only, public repos.
+          </p>
+          <Button
+            onClick={() => navigate("/connect")}
+            data-testid="dashboard-goto-connect"
+            className="mt-6 h-10 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors duration-200"
+          >
+            <Github className="h-3.5 w-3.5 mr-2" /> Connect GitHub
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+  if (projects.length === 0) {
+    return (
+      <Card
+        data-testid="dashboard-empty"
+        className="bg-card border border-border rounded-sm p-10 flex items-start gap-4 max-w-2xl"
+      >
+        <div className="border border-border p-2 rounded-sm">
+          <Plus className="h-5 w-5" />
+        </div>
+        <div className="flex-1">
+          <h2 className="font-display text-lg tracking-tight">No repos tracked yet</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Pick some public repos from your GitHub to start scoring.
+          </p>
+          <Link
+            to="/repos"
+            data-testid="dashboard-empty-pick-repos"
+            className="mt-6 inline-flex items-center gap-2 h-10 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors duration-200 px-4 text-sm font-medium"
+          >
+            <Plus className="h-3.5 w-3.5" /> Pick repos
+          </Link>
+        </div>
+      </Card>
+    );
+  }
+  return (
+    <div
+      data-testid="dashboard-grid"
+      className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+    >
+      {projects.map((p) => (
+        <ProjectCard key={p.id} project={p} />
+      ))}
+    </div>
   );
 }
