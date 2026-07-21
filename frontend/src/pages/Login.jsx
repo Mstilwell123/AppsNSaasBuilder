@@ -58,7 +58,7 @@ export default function Login() {
         <div className="relative z-10 h-full flex flex-col justify-between p-10">
           <div className="flex items-center gap-2 font-display tracking-tight text-sm">
             <span className="inline-block h-2 w-2 bg-foreground" />
-            AppNSaasBuilder
+            App N SaaS Builder
           </div>
           <div>
             <h2 className="font-display text-4xl lg:text-5xl tracking-tight leading-[1.05] max-w-md">
@@ -77,7 +77,7 @@ export default function Login() {
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-2 font-display tracking-tight text-sm mb-10">
             <span className="inline-block h-2 w-2 bg-foreground" />
-            AppNSaasBuilder
+            App N SaaS Builder
           </div>
           <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-3">Sign in</p>
           <h1 className="font-display text-4xl sm:text-5xl tracking-tight leading-tight mb-3">Welcome back.</h1>

@@ -43,4 +43,18 @@ export const api = {
       method: "POST",
       body: { current_password: current_password || null, new_password },
     }),
+  // GitHub
+  githubStatus: () => request("/github/status"),
+  githubConnect: () => request("/github/connect"),
+  githubDisconnect: () => request("/github/disconnect", { method: "POST" }),
+  githubRepos: () => request("/github/repos"),
+  // Projects
+  listProjects: () => request("/projects"),
+  trackProject: (github_repo_id) =>
+    request("/projects", { method: "POST", body: { github_repo_id } }),
+  getProject: (id) => request(`/projects/${id}`),
+  deleteProject: (id) => request(`/projects/${id}`, { method: "DELETE" }),
+  scanProject: (id) => request(`/projects/${id}/scan`, { method: "POST" }),
+  toggleNextStep: (id, done) =>
+    request(`/next-steps/${id}`, { method: "PATCH", body: { done } }),
 };

@@ -336,3 +336,265 @@ def test_cors_preflight_allowed_direct():
     })
     assert r.status_code in (200, 204)
     assert r.headers.get("access-control-allow-origin") == "http://localhost:3000"
+
+
+# ================================================================
+# NEW — GitHub OAuth + Projects (iteration_3)
+# ================================================================
+from urllib.parse import urlparse, parse_qs
+from cryptography.fernet import Fernet
+
+
+def _fernet():
+    # Load fernet key from backend env (same as server.py uses)
+    key = None
+    with open("/app/backend/.env") as f:
+        for line in f:
+            if line.startswith("TOKEN_ENCRYPTION_KEY="):
+                key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    assert key, "TOKEN_ENCRYPTION_KEY missing in /app/backend/.env"
+    return Fernet(key.encode())
+
+
+def _seed_github_connection(user_id, username="fakeuser"):
+    enc = _fernet().encrypt(b"ghp_fake_token_for_testing").decode()
+    db.github_connections.delete_many({"user_id": user_id})
+    db.github_connections.insert_one({
+        "user_id": user_id,
+        "github_user_id": 999,
+        "github_username": username,
+        "encrypted_token": enc,
+        "scopes": ["public_repo", "read:user"],
+        "connected_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _cleanup_project_data(user_id):
+    projs = list(db.projects.find({"user_id": user_id}, {"id": 1}))
+    ids = [p["id"] for p in projs]
+    db.projects.delete_many({"user_id": user_id})
+    db.next_steps.delete_many({"project_id": {"$in": ids}})
+    db.scores.delete_many({"project_id": {"$in": ids}})
+    db.scans.delete_many({"project_id": {"$in": ids}})
+    db.github_connections.delete_many({"user_id": user_id})
+    db.github_oauth_states.delete_many({"user_id": user_id})
+
+
+@pytest.fixture
+def seeded_with_cleanup(seeded):
+    uid, token, email = seeded
+    yield uid, token, email
+    _cleanup_project_data(uid)
+
+
+# ---------- github/status ----------
+def test_github_status_unauth():
+    assert requests.get(f"{API}/github/status").status_code == 401
+
+
+def test_github_status_authed_not_connected(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.get(f"{API}/github/status", headers=auth(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"connected": False, "github_username": None}
+
+
+def test_github_status_connected(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    _seed_github_connection(uid, username="ghtester")
+    r = requests.get(f"{API}/github/status", headers=auth(token))
+    assert r.status_code == 200
+    assert r.json() == {"connected": True, "github_username": "ghtester"}
+
+
+# ---------- github/connect ----------
+def test_github_connect_returns_authorize_url(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.get(f"{API}/github/connect", headers=auth(token))
+    assert r.status_code == 200
+    url = r.json()["url"]
+    assert url.startswith("https://github.com/login/oauth/authorize?")
+    q = parse_qs(urlparse(url).query)
+    assert q["client_id"][0]
+    assert "/api/github/callback" in q["redirect_uri"][0]
+    scope = q["scope"][0]
+    assert "public_repo" in scope and "read:user" in scope
+    assert q["state"][0]
+    # And a github_oauth_states row was persisted
+    assert db.github_oauth_states.find_one({"state": q["state"][0]}) is not None
+
+
+# ---------- github/callback ----------
+def test_github_callback_missing_params_redirects():
+    r = requests.get(f"{API}/github/callback", allow_redirects=False)
+    assert r.status_code in (302, 307)
+    loc = r.headers.get("location", "")
+    assert "/connect?error=" in loc
+
+
+def test_github_callback_unknown_state_redirects():
+    r = requests.get(f"{API}/github/callback",
+                     params={"code": "xxx", "state": "totally-unknown-state"},
+                     allow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "error=invalid_state" in r.headers.get("location", "")
+
+
+# ---------- github/repos ----------
+def test_github_repos_without_connection_returns_400(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.get(f"{API}/github/repos", headers=auth(token))
+    assert r.status_code == 400
+    assert "not connected" in r.json()["detail"].lower()
+
+
+# ---------- projects: track w/ fake conn -> plumbing test ----------
+def test_track_project_without_connection_400(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 12345})
+    assert r.status_code == 400
+
+
+def test_track_project_fake_token_hits_github_gracefully(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    _seed_github_connection(uid)
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 12345})
+    # Real GitHub will reject the fake token → we return 404 (not accessible)
+    assert r.status_code in (404, 502)
+
+
+# ---------- projects: seed-based happy path ----------
+def _seed_project(user_id, name="demo", full_name="ghtester/demo", steps=None, score=None,
+                  sparkline=None, ci_status="configured", live_url="https://demo.example.com"):
+    pid = f"proj_test_{uuid.uuid4().hex[:8]}"
+    now = datetime.now(timezone.utc).isoformat()
+    db.projects.insert_one({
+        "id": pid, "user_id": user_id, "github_repo_id": 100 + hash(pid) % 10_000,
+        "name": name, "full_name": full_name, "private": False,
+        "primary_language": "Python", "languages": {"Python": 1000},
+        "stars": 3, "forks": 1, "open_issues": 2,
+        "default_branch": "main", "live_url": live_url,
+        "ci_status": ci_status,
+        "commit_sparkline": sparkline if sparkline is not None else [1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 10],
+        "last_commit_at": now,
+        "one_line_summary": "A demo project.",
+        "added_at": now, "updated_at": now,
+    })
+    if score is not None:
+        db.scores.insert_one({
+            "id": f"score_test_{uuid.uuid4().hex[:6]}",
+            "user_id": user_id, "project_id": pid,
+            "score": int(score), "rationale": "Because.",
+            "model": "claude-haiku-4-5-20251001",
+            "scored_at": now,
+        })
+    step_ids = []
+    for i, s in enumerate(steps or [], start=1):
+        sid = f"step_test_{uuid.uuid4().hex[:8]}"
+        step_ids.append(sid)
+        db.next_steps.insert_one({
+            "id": sid, "user_id": user_id, "project_id": pid,
+            "text": s["text"], "weight": s["weight"],
+            "order": s.get("order", i), "done": bool(s.get("done", False)),
+            "created_at": now,
+        })
+    return pid, step_ids
+
+
+def test_list_projects_returns_seeded(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid, _ = _seed_project(uid, score=72,
+                           steps=[{"text": "Add README", "weight": 3, "done": True},
+                                  {"text": "Add CI", "weight": 5, "done": False},
+                                  {"text": "Polish", "weight": 2, "done": False}])
+    r = requests.get(f"{API}/projects", headers=auth(token))
+    assert r.status_code == 200, r.text
+    arr = r.json()
+    assert len(arr) == 1
+    p = arr[0]
+    assert p["id"] == pid
+    assert p["latest_score"]["score"] == 72
+    assert len(p["next_steps"]) == 3
+    # completion = 3 / (3+5+2) * 100 = 30
+    assert p["completion"] == 30
+    assert len(p["commit_sparkline"]) == 12
+
+
+def test_get_project_shape(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid, _ = _seed_project(uid, score=50, steps=[{"text": "A", "weight": 1}])
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == pid
+    assert body["latest_score"]["score"] == 50
+
+
+def test_get_project_other_user_returns_404(seeded_with_cleanup):
+    uid, _, _ = seeded_with_cleanup
+    pid, _ = _seed_project(uid)
+    # Second seeded user
+    uid2, token2, _ = _seed_user_and_session()
+    try:
+        r = requests.get(f"{API}/projects/{pid}", headers=auth(token2))
+        assert r.status_code == 404
+    finally:
+        db.users.delete_many({"user_id": uid2})
+        db.user_sessions.delete_many({"user_id": uid2})
+
+
+def test_toggle_next_step_updates_completion(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid, step_ids = _seed_project(uid, steps=[
+        {"text": "A", "weight": 5},
+        {"text": "B", "weight": 3},
+        {"text": "C", "weight": 2},
+    ])
+    # Mark only weight-5 done → completion = 50
+    r = requests.patch(f"{API}/next-steps/{step_ids[0]}", headers=auth(token),
+                       json={"done": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["completion"] == 50
+    # Mark all done → 100
+    requests.patch(f"{API}/next-steps/{step_ids[1]}", headers=auth(token), json={"done": True})
+    r = requests.patch(f"{API}/next-steps/{step_ids[2]}", headers=auth(token), json={"done": True})
+    assert r.json()["completion"] == 100
+    # Mark all undone → 0
+    for sid in step_ids:
+        r = requests.patch(f"{API}/next-steps/{sid}", headers=auth(token), json={"done": False})
+    assert r.json()["completion"] == 0
+
+
+def test_toggle_next_step_of_other_user_returns_404(seeded_with_cleanup):
+    uid, _, _ = seeded_with_cleanup
+    _, step_ids = _seed_project(uid, steps=[{"text": "A", "weight": 1}])
+    uid2, token2, _ = _seed_user_and_session()
+    try:
+        r = requests.patch(f"{API}/next-steps/{step_ids[0]}", headers=auth(token2),
+                           json={"done": True})
+        assert r.status_code == 404
+    finally:
+        db.users.delete_many({"user_id": uid2})
+        db.user_sessions.delete_many({"user_id": uid2})
+
+
+def test_delete_project_cascades(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid, step_ids = _seed_project(uid, score=40,
+                                  steps=[{"text": "A", "weight": 1}, {"text": "B", "weight": 1}])
+    # add a scan row
+    db.scans.insert_one({"id": "scan_test", "user_id": uid, "project_id": pid,
+                         "status": "done", "started_at": "", "finished_at": ""})
+    r = requests.delete(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.status_code == 200
+    # subsequent GET → 404
+    assert requests.get(f"{API}/projects/{pid}", headers=auth(token)).status_code == 404
+    # cascade
+    assert db.projects.find_one({"id": pid}) is None
+    assert db.next_steps.count_documents({"project_id": pid}) == 0
+    assert db.scores.count_documents({"project_id": pid}) == 0
+    assert db.scans.count_documents({"project_id": pid}) == 0

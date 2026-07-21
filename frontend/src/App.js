@@ -8,6 +8,9 @@ import Dashboard from "@/pages/Dashboard";
 import Settings from "@/pages/Settings";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
+import Connect from "@/pages/Connect";
+import RepoPicker from "@/pages/RepoPicker";
+import ProjectDetail from "@/pages/ProjectDetail";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
@@ -27,6 +30,30 @@ function AppRouter() {
         element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/connect"
+        element={
+          <ProtectedRoute>
+            <Connect />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/repos"
+        element={
+          <ProtectedRoute>
+            <RepoPicker />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/projects/:id"
+        element={
+          <ProtectedRoute>
+            <ProjectDetail />
           </ProtectedRoute>
         }
       />

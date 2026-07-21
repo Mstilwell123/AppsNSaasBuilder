@@ -1,0 +1,30 @@
+{
+  "summary": "Full backend + frontend verification of iteration_3 (GitHub OAuth + Projects + Scoring). 39/39 pytest backend tests pass (auth regression 24 + new GitHub/Projects 15). 10/10 Playwright UI checks pass: unauth /dashboard -> /, authed no-gh -> connect CTA, /connect card + button firing /api/github/connect, connected no-projects -> empty state, seeded-project -> project card w/ score=77 + 12 sparkline bars + portfolio-avg, card click -> /projects/{id}, project detail renders score/rationale/completion/sparkline/next-steps, checkbox toggle server-persists (20% after 1 of {2,5,3}) and survives hard reload (F2), scan-confirm-dialog opens and Cancel does NOT fire POST /scan (0 network calls), delete confirms -> DELETE /api/projects/{id} -> /dashboard.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard project cards", "issues": ["React hydration warning: 'In HTML, <a> cannot be a descendant of <a>'. ProjectCard root is a react-router <Link> (renders <a>) but it also contains a nested <a> for project.live_url (project-card-live-url-{id}). Wrap the card in a <div> and put the internal navigation click on the whole card (onClick={() => navigate(...)}), or render the outer element as a non-anchor and keep the inner live-url as the only <a>. Non-blocking today but produces a console error on every dashboard render with tracked projects."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix nested <a><a> in ProjectCard (see design_issues above)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:640 _project_to_out returns commit_sparkline as-is; if seeded/legacy docs have <12 entries, the frontend Sparkline still pads to 12 bars (good) but scoring uses raw sum. Consider normalising to always store exactly 12 entries at write-time.",
+    "server.py:775 github_callback consumes state via delete_many BEFORE checking expiry - if expired, state is gone AND we return state_expired redirect. Fine (single-use) but note that a legitimately expired-then-retried flow will report invalid_state on retry, not state_expired. Minor UX nit.",
+    "server.py:856 github_repos hard-filters private repos client-side; also relies on GitHub returning only the requester's own via affiliation=owner. Consider requesting 'visibility=public' as well for defensive belt-and-braces.",
+    "server.py:940 scan_project performs _score_with_llm and writes DB updates without a lock; two concurrent scans on the same project could interleave next_steps delete/insert. Low risk (per-user, per-project) but worth noting for a future queue.",
+    "ProjectCard nested anchor (see frontend design_issues)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "None persistent. Backend + UI tests seed direct-Mongo users/sessions + a github_connections row using Fernet(TOKEN_ENCRYPTION_KEY) and a fake GitHub token. Cleaned up after run.",
+  "seed_data_creation": "Per-test seeded users, sessions, github_connections (encrypted fake token), projects, next_steps, scores. All prefixed TEST-* / proj_uitest_* / step_uitest_* / score_uitest_* and cleaned up. No real GitHub or LLM calls made.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend base = REACT_APP_BACKEND_URL + /api. Mongo local. To seed a 'connected' user without OAuth: insert a github_connections row with encrypted_token = Fernet(TOKEN_ENCRYPTION_KEY).encrypt(b'ghp_fake'). Fake tokens will 502/404 against real GitHub — that's the correct assertion in track_project tests. All 39 pytest tests live in /app/backend/tests/backend_test.py and are safe to rerun. Real /scan (Claude Haiku) is intentionally NOT invoked — only the confirm-dialog UX and cancel behaviour are tested.",
+  "rca of the issue": "N/A — no bug found. One frontend hydration warning (nested <a>) documented under design_issues; not blocking."
+}

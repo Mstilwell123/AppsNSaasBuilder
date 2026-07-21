@@ -42,7 +42,7 @@ export default function AppShell({ children, active }) {
             data-testid="app-shell-brand"
           >
             <span className="inline-block h-2 w-2 bg-foreground" />
-            AppNSaasBuilder
+            App N SaaS Builder
           </Link>
           <nav className="flex items-center gap-1">
             <Link
