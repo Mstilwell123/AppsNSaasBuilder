@@ -38,14 +38,28 @@ publicly-exposed admin password.
 ## What's been implemented (2026-02)
 - Emergent Google Auth end-to-end (session exchange, cookie, /me, logout).
 - Local password: set + change flow with all validation branches.
+- **Local email + password login** (`POST /api/auth/login`) — enumeration-safe.
+- **Forgot password + reset password** via Resend transactional email
+  (`POST /api/auth/forgot-password`, `POST /api/auth/reset-password`), sha256-hashed
+  single-use tokens with 30 min TTL. Reset revokes all sessions and signs the user
+  in on the new device.
 - Rotate-on-change: revokes sibling sessions, keeps current device signed in.
 - Settings page (profile + password) with data-testids and inline errors.
+- Login page with email/password form + Google as secondary; `/forgot-password`
+  and `/reset-password` pages fully wired.
 - Design tokens applied globally (dark Swiss theme, Chivo/IBM Plex Sans, sharp radii).
+- **CORS tightened**: `CORS_ORIGINS` env now scoped to the preview host +
+  `http://localhost:3000` (was `*`). Note: platform ingress may still override
+  CORS on the external URL.
 - `/app/auth_testing.md` seed & curl playbook committed.
 
 ## Backlog / next
-- **P1**: Add "sign in with local password" so users can bypass Google if desired.
-- **P2**: Password strength meter (zxcvbn), reveal-password toggle.
-- **P2**: Admin-only "reset another user's password" screen.
-- **P2**: "Forgot password" email reset (needs a mail provider).
-- **P3**: Session list + "revoke this device" per row in Settings.
+- P1: Sign-up route (email + password) — REGISTER test IDs already declared, no page yet.
+- P2: Password strength meter (zxcvbn), reveal-password toggle.
+- P2: Admin-only "reset another user's password" screen.
+- P2: TTL index on `user_sessions.expires_at` (auto-GC).
+- P2: Normalize email to lowercase at write-time so login and forgot-password
+  lookups don't need casing fallbacks.
+- P3: Session list + "revoke this device" per row in Settings.
+- P3: Verify a custom domain in Resend so password-reset emails can be sent to
+  arbitrary recipients (currently limited to the API-key owner's inbox in test mode).

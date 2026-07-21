@@ -17,7 +17,7 @@ export default function Dashboard() {
             Hey, {user?.name?.split(" ")[0] || "there"}.
           </h1>
           <p className="mt-3 text-sm text-muted-foreground max-w-lg">
-            You&apos;re signed in with Google. Tighten your account by setting a
+            You&apos;re signed in. Tighten your account by setting or rotating your
             local password from Settings.
           </p>
         </div>
