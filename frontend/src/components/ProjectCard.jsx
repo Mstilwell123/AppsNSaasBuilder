@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import Sparkline from "@/components/Sparkline";
 import { ExternalLink, GitBranch, Star, CircleDot } from "lucide-react";
 
@@ -41,12 +41,23 @@ function CIBadge({ status }) {
 }
 
 export default function ProjectCard({ project }) {
+  const navigate = useNavigate();
   const score = project.latest_score?.score;
+  const goToDetail = () => navigate(`/projects/${project.id}`);
+  const onKeyDown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      goToDetail();
+    }
+  };
   return (
-    <Link
-      to={`/projects/${project.id}`}
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={goToDetail}
+      onKeyDown={onKeyDown}
       data-testid={`project-card-${project.id}`}
-      className="group flex flex-col justify-between bg-card border border-border hover:border-white/40 transition-colors duration-200 p-6 rounded-sm min-h-[220px]"
+      className="group cursor-pointer flex flex-col justify-between bg-card border border-border hover:border-white/40 focus-visible:border-white/60 focus-visible:outline-none transition-colors duration-200 p-6 rounded-sm min-h-[220px]"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -108,6 +119,6 @@ export default function ProjectCard({ project }) {
       <div className="mt-4 pt-4 border-t border-border">
         <LanguagePills languages={project.languages || {}} />
       </div>
-    </Link>
+    </div>
   );
 }

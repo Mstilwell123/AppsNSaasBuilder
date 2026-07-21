@@ -51,15 +51,39 @@ publicly-exposed admin password.
 - **CORS tightened**: `CORS_ORIGINS` env now scoped to the preview host +
   `http://localhost:3000` (was `*`). Note: platform ingress may still override
   CORS on the external URL.
+- **Brand rebrand**: "App N SaaS Builder" throughout header, login, emails.
+- **GitHub OAuth (P2)**: `GET /api/github/{status,connect,repos}`, `GET
+  /api/github/callback`, `POST /api/github/disconnect`. Tokens AES-256 encrypted
+  at rest via Fernet (`TOKEN_ENCRYPTION_KEY` env). Public-repo scope only for v1
+  (per PF-1). Per-user isolated.
+- **Projects (P2)**: `GET/POST /api/projects`, `GET/DELETE /api/projects/{id}`.
+  Track selected repos; dashboard grid of ProjectCard components.
+- **AI scoring (P3)** via Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) through
+  Emergent's universal LLM key: `POST /api/projects/{id}/scan` gathers
+  metadata-only signals (languages, 12-week commit sparkline, CI presence,
+  README presence, homepage, stars/forks/issues, license, archived) and asks
+  the model for `{score 0-100, one_line_summary, rationale, next_steps[3-6]}`
+  with weighted priorities. Response is JSON-parsed with fence-tolerance.
+- **Polish (P4)**: 12-week commit sparkline, CI status badge
+  (workflow-file presence, no Actions scope needed), live URL link,
+  weighted next-steps checklist with server-side completion % (F2: no client
+  drift), scan gated by confirm dialog (F3), re-scan carries over `done:true`
+  for identically-worded steps (case+whitespace-insensitive), portfolio-avg
+  score card on the dashboard.
+- Testing agent 3× iterations, all 100% green (last: 39/39 backend + 10/10 UI).
 - `/app/auth_testing.md` seed & curl playbook committed.
 
 ## Backlog / next
 - P1: Sign-up route (email + password) — REGISTER test IDs already declared, no page yet.
+- P2 remaining: private-repo support behind a scope-upgrade flow (PF-1 deferred).
 - P2: Password strength meter (zxcvbn), reveal-password toggle.
-- P2: Admin-only "reset another user's password" screen.
-- P2: TTL index on `user_sessions.expires_at` (auto-GC).
-- P2: Normalize email to lowercase at write-time so login and forgot-password
-  lookups don't need casing fallbacks.
-- P3: Session list + "revoke this device" per row in Settings.
+- P2: Normalize email lowercase at write.
+- P3: Session list + per-device revoke in Settings.
 - P3: Verify a custom domain in Resend so password-reset emails can be sent to
   arbitrary recipients (currently limited to the API-key owner's inbox in test mode).
+- **P5: Stripe billing** ($30/mo) — not built yet.
+- **P6: Background scans** (queue + cron) so users don't have to press "re-scan".
+- **P6: Score history chart** (already storing scores collection with `scored_at`).
+- P6: Rate-limit + brief lockout on `/api/auth/login` (credential-stuffing hardening).
+- P7 (nit): Store commit_sparkline as exactly 12 entries at write-time to normalise.
+- P7 (nit): Serialize concurrent /scan on the same project (per-project lock).
