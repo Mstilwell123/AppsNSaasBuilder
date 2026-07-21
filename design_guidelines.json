@@ -1,0 +1,82 @@
+{
+  "theme": "dark",
+  "typography": {
+    "headings": {
+      "font_family": "Chivo",
+      "import_url": "https://fonts.googleapis.com/css2?family=Chivo:ital,wght@0,100..900;1,100..900&display=swap",
+      "rules": "Use tight letter spacing (tracking-tight) for large headings. DO NOT use generic fonts like Inter for headings."
+    },
+    "body": {
+      "font_family": "IBM Plex Sans",
+      "import_url": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;1,100;1,200;1,300;1,400;1,500;1,600;1,700&display=swap",
+      "rules": "Use for all body text, inputs, lists, and dense content."
+    }
+  },
+  "colors": {
+    "archetype": "Swiss & High-Contrast",
+    "primary": "#FFFFFF",
+    "primary_foreground": "#000000",
+    "background": "#050505",
+    "card": "#0A0A0A",
+    "border": "#262626",
+    "accent": "#171717",
+    "muted": "#A3A3A3",
+    "rules": "Swiss High-Contrast logic applied to a Dark Theme. Stark white text on nearly black background. Purely monochrome functional accents with sharp 1px borders."
+  },
+  "visual_enhancers": {
+    "borders": "Expose the skeleton. Use 1px borders (border-border) everywhere: on cards, headers, grid layouts.",
+    "shadows": "No soft shadows. Use harsh flat colors or zero shadow.",
+    "radius": "max 4px or sharp edges (rounded-none to rounded-sm) for a brutalist, technical feel."
+  },
+  "layouts": {
+    "bento_grid": "For the Settings page, use a High-Density Grid layout (grid-cols-1 md:grid-cols-4). Cards stretch horizontally.",
+    "spacing": "Generous spacing. p-8 inside cards, gap-4 to gap-6 for grids.",
+    "header": "Solid background (bg-background) with a hard bottom border (border-b). DO NOT use transparent headers. Ensure it has an explicitly set z-index and doesn't overlap without spacing."
+  },
+  "components": {
+    "cards": "Flat background, 1px subtle border, no shadow. Hover: border color lightens slightly.",
+    "inputs": "Use Shadcn Input. Customize to have strict 1px border and strong ring-2 ring-white focus state.",
+    "buttons": "Sharp corners or rounded-sm, high contrast background. Active/Hover states must be clearly differentiated.",
+    "toasts": "Use sonner. Ensure they contrast with the background, e.g. white toast with black text.",
+    "dropdowns": "Solid background (bg-card), border-border, NEVER transparent."
+  },
+  "motion": {
+    "hover": "Explicit hover states must be defined (e.g., hover:bg-white/10).",
+    "transitions": "Specific transitions only: transition-colors duration-200. No transition-all.",
+    "accessibility": "Respect prefers-reduced-motion. Provide clear focus outlines."
+  },
+  "accessibility": {
+    "contrast": "Strict high contrast. Minimum 4.5:1. Never use gray-on-gray.",
+    "data_testid": "ALL interactive elements (buttons, links, inputs) MUST have a data-testid attribute (e.g., data-testid='change-password-submit')."
+  },
+  "image_urls": {
+    "login_hero": {
+      "url": "https://images.unsplash.com/photo-1488972685288-c3fd157d7c7a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzF8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGdlb21ldHJpYyUyMGFyY2hpdGVjdHVyZXxlbnwwfHx8fDE3ODQ1OTgzNzR8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract structural geometry for the login page hero/split-screen."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Remove default generic centering styles from App.css.",
+    "Inject Chivo and IBM Plex Sans fonts via @import in index.css.",
+    "Build a modern split-screen Login page using the provided login_hero image on one side, and a 'Continue with Google' button on the other.",
+    "Create an Authenticated App Shell featuring a top header with the product name and a user avatar dropdown. Use Shadcn DropdownMenu.",
+    "Build a Settings/Account page utilizing a strict High-Density bento grid style.",
+    "On the Settings page, include a 'Profile' read-only section and a 'Change Password' form.",
+    "The Change Password form must include fields for current password (if set, mock logic for now), new password, and confirm new password with inline validation.",
+    "Integrate sonner for success/error toasts upon submission of the change password form.",
+    "Ensure the change password endpoint logic is wired to POST /api/auth/change-password.",
+    "Use Phosphor icons or lucide-react."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy, or strict grid borders if using brutalist style.",
+    "NEVER use transition: all.",
+    "NEVER center align the app container in css.",
+    "Always use modern button styles with interaction animations.",
+    "NEVER use AI assistant emojis for icons.",
+    "Prioritize using pre-existing components from src/components/ui.",
+    "Examine existing components to understand patterns.",
+    "Use sonner for toasts.",
+    "Include data-testid for ALL interactive elements."
+  ]
+}
