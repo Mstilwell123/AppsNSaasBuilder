@@ -373,7 +373,12 @@ async def forgot_password(payload: ForgotPasswordIn):
         })
         base = FRONTEND_URL or ""
         reset_link = f"{base}/reset-password?token={raw_token}"
-        await _send_reset_email(user["email"], user.get("name", ""), reset_link)
+        try:
+            await _send_reset_email(user["email"], user.get("name", ""), reset_link)
+        except HTTPException as exc:
+            # Enumeration protection: never leak whether the account exists
+            # via a send-side error. Log for ops; still return {ok:true}.
+            logger.warning("forgot-password: send failed for user_id=%s: %s", user["user_id"], exc.detail)
     return {"ok": True}
 
 

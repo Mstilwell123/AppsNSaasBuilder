@@ -16,7 +16,30 @@ export const LOGIN = {
 	passwordInput: 'login-password-input',
 	submitButton: 'login-submit-button',
 	forgotPasswordLink: 'login-forgot-password-link',
+	googleButton: 'login-google-button',
 	registerLink: 'login-register-link',
+	formError: 'login-form-error',
+};
+
+export const FORGOT_PASSWORD = {
+	emailInput: 'forgot-password-email-input',
+	submitButton: 'forgot-password-submit-button',
+	sentPanel: 'forgot-password-sent-panel',
+	backLink: 'forgot-password-back-link',
+	returnLink: 'forgot-password-return-link',
+	emailError: 'forgot-password-email-error',
+};
+
+export const RESET_PASSWORD = {
+	newInput: 'reset-password-new-input',
+	confirmInput: 'reset-password-confirm-input',
+	submitButton: 'reset-password-submit-button',
+	newError: 'reset-password-new-error',
+	confirmError: 'reset-password-confirm-error',
+	formError: 'reset-password-form-error',
+	missingToken: 'reset-password-missing-token',
+	requestNewLink: 'reset-password-request-new-link',
+	backLink: 'reset-password-back-link',
 };
 
 export const REGISTER = {

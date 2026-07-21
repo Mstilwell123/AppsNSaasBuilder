@@ -1,0 +1,44 @@
+{
+  "summary": "Full backend + frontend verification of local login (POST /api/auth/login), forgot-password, reset-password, and CORS scoping. 24/24 pytest backend tests pass. 9/9 Playwright UI checks pass (login page, forgot-password → sent panel, /reset-password missing-token state, token form with mismatch + short-password inline validation, valid reset → /dashboard signed-in, no-password login → inline error + toast 'Invalid email or password', valid-creds login → /dashboard). Session revocation on reset-password confirmed: pre-existing tokens all return 401 after reset. Regression: previously passing change-password suite still 100%.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "OPTIONS /api/* (external)", "issue": "Cloudflare/Kubernetes ingress overrides FastAPI CORS headers with 'Access-Control-Allow-Origin: *' together with 'Allow-Credentials: true' on the public preview URL. Browsers reject that combo. Direct hits to :8001 show FastAPI is correctly scoped to https://auth-change-2.preview.emergentagent.com + http://localhost:3000. Platform/infra-level behaviour, not an app bug — flagging so it's visible."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["Header copy reads 'You\\'re signed in with Google. Tighten your account by setting a local password from Settings.' even when the user just signed in via email + password (or after reset-password). Should be conditional on auth channel."]},
+      {"screen": "Login", "issues": ["Footer helper text 'First time here? Sign in with Google, then set a local password in Settings.' hides the email/password onboarding path; consider adding a Register/Sign-up affordance since /register isn't wired (REGISTER test IDs exist in constants but no route)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Optional: adjust Dashboard/Settings copy so 'signed in with Google' text reflects the actual auth channel (Google vs local password).",
+    "Optional: register route / sign-up UI (REGISTER test IDs are declared but no page renders them).",
+    "Investigate whether the platform ingress can be configured to pass through FastAPI CORS headers on the external URL — the app-level tightening is correct but not observable from a browser today."
+  ],
+  "critical_code_review_comments": [
+    "server.py /auth/logout still ungated — anonymous callers get {ok:true}. Low risk but tightens semantics with a 401 when no token.",
+    "server.py /auth/session and /auth/login both call _mint_local_session / insert user_sessions but never garbage-collect expired session rows — consider a TTL index on user_sessions.expires_at.",
+    "server.py /auth/login lookup does users.find_one({email: lower}) then falls back to {email: raw} — better to normalize email at write-time (session exchange + any future signup) so the fallback is unnecessary.",
+    "server.py /auth/forgot-password only queries by exact email; if a user's email was inserted with mixed case via Emergent auth, forgot-password will silently 200 with no token created. Consider case-insensitive lookup here too (or normalize on write).",
+    "resend.Emails.send is called via asyncio.to_thread inside try/except — good. But _send_reset_email raises 500/502 which /forgot-password swallows; /reset-password path never calls it. Fine.",
+    "CORS_ORIGINS is read from env correctly; when empty the middleware receives [] which effectively blocks all cross-origin. Consider failing fast at boot if CORS_ORIGINS is empty in production."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "None persistent. Frontend UI test seeds three ephemeral users (no-password, has-password, reset-token) directly in Mongo and cleans them up. Backend tests use the existing per-test seeded-user fixture.",
+  "seed_data_creation": "Per-test Mongo seeding via mongosh + backend /auth/change-password. All UI seed rows are cleaned up in the finally block; backend test fixtures clean up in yield teardown.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend base = REACT_APP_BACKEND_URL + /api. Mongo local (mongodb://localhost:27017, DB test_database). Collections: users, user_sessions, password_reset_tokens. All 24 backend tests in /app/backend/tests/backend_test.py are safe to rerun. For CORS enforcement checks against the FastAPI middleware directly, hit http://localhost:8001 — the external URL is fronted by Cloudflare which rewrites CORS. To test reset-password UI end-to-end without inbox delivery, insert a password_reset_tokens row directly: raw token stored client-side, sha256(raw) as token_hash in Mongo.",
+  "rca of the issue": "N/A — feature is implemented correctly. Only observation is the CORS-header override at the platform ingress layer, which is outside application code."
+}
