@@ -1,0 +1,24 @@
+{
+  "summary": "Regression sweep after AuthProvider useMemo wrap in /app/frontend/src/lib/auth.jsx. Backend: 39/39 pytest tests PASS (auth 24 + github/projects 15) in 10.6s. Frontend: all 5 requested UI flows PASS - (1) login page renders with login-google-button/login-submit-button/login-email-input/login-password-input, (2) unauthenticated visits to /dashboard, /settings, /connect, /repos, /projects/:id all redirect to /, (3) authed /dashboard renders dashboard-connect-cta (seeded user has no github_connection, expected), (4) /settings shows settings-profile-card + settings-password-card and settings-profile-email matches the seeded email exactly, (5) user-menu-trigger -> user-menu-logout clears session and a subsequent /dashboard redirects to /. Zero AuthProvider/useAuth/context console errors. useMemo change is transparent to consumers (Login, Dashboard, Settings, ProtectedRoute, AppShell, UserMenu all read { user, setUser, loading, refresh, logout } correctly).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard project cards", "issues": ["Carried over from iteration_3 (NOT re-tested here since seeded user has no projects): nested <a><a> hydration warning in ProjectCard (react-router <Link> wraps a project-card-live-url-{id} <a>). Non-blocking. This is not related to the AuthProvider change."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "auth.jsx useMemo change is correct: deps [user, loading, refresh, logout] cover all mutable values; setUser is stable from React (no need to include). Consumers see a referentially stable value across unrelated re-renders, which is the intended perf micro-fix."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Ephemeral direct-Mongo seeded user + user_sessions row (per /app/auth_testing.md). Wiped after run.",
+  "seed_data_creation": "One test.user.<ts>@example.com user + matching user_sessions row. Cleaned up post-test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration_4 was a pure regression sweep for the AuthProvider useMemo micro-fix. Backend untouched since iteration_3. If future iterations touch auth.jsx again, re-verify: (a) useAuth() still returns { user, setUser, loading, refresh, logout }, (b) Login/Dashboard/Settings/ProtectedRoute/UserMenu still consume it, (c) no console errors mentioning 'AuthProvider' or 'useAuth'. Backend pytest file /app/backend/tests/backend_test.py is safe to rerun in ~11s and remains the source of truth (39 tests).",
+  "rca of the issue": "N/A - no regression detected. AuthProvider useMemo wrap has no observable behavior change; all downstream consumers work identically."
+}
