@@ -763,3 +763,121 @@ def test_pro_tier_bypasses_free_gate(billing_seeded):
     assert r.status_code != 402
     assert r.status_code in (404, 502)
 
+
+# ================================================================
+# Top Movers (iteration_7)
+# ================================================================
+def _seed_score(project_id, user_id, score, scored_at):
+    db.scores.insert_one({
+        "id": f"score_test_{uuid.uuid4().hex[:6]}",
+        "user_id": user_id, "project_id": project_id,
+        "score": int(score), "rationale": "test", "model": "claude-haiku",
+        "scored_at": scored_at,
+    })
+
+
+def _seed_project_no_score(user_id, name, full_name):
+    pid, _ = _seed_project(user_id, name=name, full_name=full_name, score=None)
+    return pid
+
+
+def _seed_movers_scenario(user_id):
+    """3 projects: up (+18), down (-15), zero (0)."""
+    now = datetime.now(timezone.utc)
+    def iso(mins_ago):
+        return (now - timedelta(minutes=mins_ago)).isoformat()
+    up = _seed_project_no_score(user_id, "up-proj", "ghtester/up-proj")
+    _seed_score(up, user_id, 60, iso(20))     # previous
+    _seed_score(up, user_id, 78, iso(5))      # latest -> +18
+    down = _seed_project_no_score(user_id, "down-proj", "ghtester/down-proj")
+    _seed_score(down, user_id, 55, iso(30))
+    _seed_score(down, user_id, 40, iso(10))   # -15
+    zero = _seed_project_no_score(user_id, "zero-proj", "ghtester/zero-proj")
+    _seed_score(zero, user_id, 70, iso(25))
+    _seed_score(zero, user_id, 70, iso(3))    # 0
+    return up, down, zero
+
+
+def test_movers_unauth():
+    assert requests.get(f"{API}/movers").status_code == 401
+
+
+def test_movers_no_projects_empty(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.get(f"{API}/movers", headers=auth(token))
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_movers_single_score_excluded(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    _seed_project(uid, name="oneshot", full_name="ghtester/oneshot", score=50)
+    r = requests.get(f"{API}/movers", headers=auth(token))
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_movers_zero_delta_excluded(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    now = datetime.now(timezone.utc)
+    pid = _seed_project_no_score(uid, "flat", "ghtester/flat")
+    _seed_score(pid, uid, 70, (now - timedelta(minutes=20)).isoformat())
+    _seed_score(pid, uid, 70, (now - timedelta(minutes=5)).isoformat())
+    r = requests.get(f"{API}/movers", headers=auth(token))
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_movers_seeded_scenario_order_and_shape(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    up, down, zero = _seed_movers_scenario(uid)
+    r = requests.get(f"{API}/movers", headers=auth(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 2, body
+    assert body[0]["project_id"] == up
+    assert body[0]["delta"] == 18
+    assert body[0]["latest_score"] == 78
+    assert body[0]["previous_score"] == 60
+    assert body[0]["name"] == "up-proj"
+    assert body[0]["full_name"] == "ghtester/up-proj"
+    assert isinstance(body[0]["scored_at"], str) and body[0]["scored_at"]
+    assert isinstance(body[0]["previous_scored_at"], str)
+    assert body[1]["project_id"] == down
+    assert body[1]["delta"] == -15
+    assert all(m["project_id"] != zero for m in body)
+
+
+def test_movers_limit_clamping(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    up, down, _ = _seed_movers_scenario(uid)
+    r1 = requests.get(f"{API}/movers?limit=1", headers=auth(token))
+    assert r1.status_code == 200
+    b1 = r1.json()
+    assert len(b1) == 1 and b1[0]["project_id"] == up
+    r0 = requests.get(f"{API}/movers?limit=0", headers=auth(token))
+    assert r0.status_code == 200
+    assert len(r0.json()) == 1  # clamps to 1
+    rbig = requests.get(f"{API}/movers?limit=999", headers=auth(token))
+    assert rbig.status_code == 200
+    assert len(rbig.json()) == 2  # only 2 eligible; clamp doesn't invent rows
+    rneg = requests.get(f"{API}/movers?limit=-5", headers=auth(token))
+    assert rneg.status_code == 200
+    assert len(rneg.json()) == 1
+
+
+def test_movers_per_user_isolation(seeded_with_cleanup):
+    uid_a, token_a, _ = seeded_with_cleanup
+    _seed_movers_scenario(uid_a)
+    # seed user B
+    uid_b, token_b, _ = _seed_user_and_session()
+    try:
+        r = requests.get(f"{API}/movers", headers=auth(token_b))
+        assert r.status_code == 200
+        assert r.json() == []
+        # Also confirm A still sees 2
+        r2 = requests.get(f"{API}/movers", headers=auth(token_a))
+        assert len(r2.json()) == 2
+    finally:
+        db.users.delete_many({"user_id": uid_b})
+        db.user_sessions.delete_many({"user_id": uid_b})

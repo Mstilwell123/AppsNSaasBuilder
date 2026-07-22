@@ -1056,6 +1056,60 @@ async def toggle_next_step(step_id: str, payload: ToggleNextStepIn, user: dict =
 
 
 
+# ---------- Top Movers ----------
+class MoverOut(BaseModel):
+    project_id: str
+    name: str
+    full_name: str
+    latest_score: int
+    previous_score: int
+    delta: int
+    scored_at: str
+    previous_scored_at: str
+
+
+@api.get("/movers", response_model=List[MoverOut])
+async def top_movers(
+    limit: int = 3,
+    user: dict = Depends(get_current_user),
+):
+    """Projects whose latest score changed the most vs their previous scan.
+
+    Only projects with at least two recorded scores are eligible. Sorted by
+    absolute delta descending; ties broken by most recent scored_at.
+    """
+    limit = max(1, min(20, int(limit)))
+    projects = [p async for p in db.projects.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "id": 1, "name": 1, "full_name": 1},
+    )]
+    movers: List[dict] = []
+    for p in projects:
+        recent = await db.scores.find(
+            {"project_id": p["id"]}, {"_id": 0}, sort=[("scored_at", -1)],
+        ).to_list(length=2)
+        if len(recent) < 2:
+            continue
+        latest, previous = recent[0], recent[1]
+        delta = int(latest["score"]) - int(previous["score"])
+        if delta == 0:
+            continue
+        movers.append({
+            "project_id": p["id"],
+            "name": p["name"],
+            "full_name": p["full_name"],
+            "latest_score": int(latest["score"]),
+            "previous_score": int(previous["score"]),
+            "delta": delta,
+            "scored_at": latest["scored_at"],
+            "previous_scored_at": previous["scored_at"],
+        })
+    movers.sort(key=lambda m: (-abs(m["delta"]), -1 if m["scored_at"] else 0), reverse=False)
+    # Above uses negative absolute delta as primary key (ascending sort of negatives = largest first).
+    return movers[:limit]
+
+
+
+
 # ---------- Billing (Stripe subscription) ----------
 class BillingCheckoutIn(BaseModel):
     origin_url: str

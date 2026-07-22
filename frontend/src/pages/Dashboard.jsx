@@ -4,6 +4,7 @@ import AppShell from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import ProjectCard from "@/components/ProjectCard";
+import TopMovers from "@/components/TopMovers";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
+  const [movers, setMovers] = useState([]);
   const [connected, setConnected] = useState(null); // null=loading, true/false
   const [loading, setLoading] = useState(true);
 
@@ -22,6 +24,13 @@ export default function Dashboard() {
         const [status, list] = await Promise.all([api.githubStatus(), api.listProjects()]);
         setConnected(status.connected);
         setProjects(list);
+        // Top movers is best-effort; failure shouldn't kill the dashboard.
+        try {
+          const m = await api.topMovers(3);
+          setMovers(m);
+        } catch {
+          setMovers([]);
+        }
       } catch (err) {
         toast.error(err?.data?.detail || "Failed to load dashboard");
         setConnected(false);
@@ -81,12 +90,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {renderBody({ loading, connected, projects, navigate })}
+      {renderBody({ loading, connected, projects, movers, navigate })}
     </AppShell>
   );
 }
 
-function renderBody({ loading, connected, projects, navigate }) {
+function renderBody({ loading, connected, projects, movers, navigate }) {
   if (loading) {
     return (
       <div className="text-sm text-muted-foreground" data-testid="dashboard-loading">
@@ -145,13 +154,16 @@ function renderBody({ loading, connected, projects, navigate }) {
     );
   }
   return (
-    <div
-      data-testid="dashboard-grid"
-      className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
-    >
-      {projects.map((p) => (
-        <ProjectCard key={p.id} project={p} />
-      ))}
-    </div>
+    <>
+      <TopMovers movers={movers} />
+      <div
+        data-testid="dashboard-grid"
+        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+      >
+        {projects.map((p) => (
+          <ProjectCard key={p.id} project={p} />
+        ))}
+      </div>
+    </>
   );
 }
