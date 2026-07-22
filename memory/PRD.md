@@ -38,44 +38,54 @@ publicly-exposed admin password.
 ## What's been implemented (2026-02)
 - Auth stack: Emergent Google Auth + email/password sign-up + login + change/set
   password + forgot/reset via Resend (30-min sha256 single-use tokens).
-- **Login rate-limit** (new): 5 failed attempts per email in 15 min → 429.
-  `login_attempts` Mongo collection. Keyed on email only (documented — cluster
-  ingress rotates upstream IPs, and attackers can rotate real IPs anyway; the
-  email is the stable brute-force key).
-- Settings page: profile, password, billing, weekly digest — all with data-testids.
+- Login rate-limit: 5 failed attempts per email in 15 min → 429.
+- Settings page: profile, password, billing, weekly digest — all data-testids.
 - Login page + Google fallback + /forgot-password + /reset-password + /register.
-- CORS scoped to preview host + http://localhost:3000. Brand: "App N SaaS Builder".
+- CORS scoped. Brand: "App N SaaS Builder".
 - GitHub OAuth (public_repo), AES-256 Fernet-encrypted tokens. Projects CRUD.
-- AI scoring via Claude Haiku 4.5 (Emergent LLM key). Structured JSON.
-- Polish: 12-week sparkline, CI badge, live URL, weighted next-steps checklist
-  with server-side completion %, done-flag preservation on re-scan.
-- **Async scan** (new): `POST /api/projects/{id}/scan` returns
-  `{id, project_id, status: "running"}` immediately and runs the LLM call as an
-  `asyncio.create_task`. `GET /api/scans/{scan_id}` for polling.
-  Frontend polls every 2s up to 60s; toasts on completion or error.
-- Score history: `GET /api/projects/{id}/scores` + SVG line chart on ProjectDetail.
-- Stripe billing (P5): $30/mo Pro, 3-repo free-tier cap (402 with
-  `code: "free_tier_limit_reached"`). Managed Payments (tax_mode="full").
-- Top Movers widget: `GET /api/movers` + dashboard strip.
-- **Streak badge** (new): `ProjectOut.streak` = consecutive strictly-increasing
-  scans walking back from newest. Flame chip on ProjectCard when streak ≥ 2.
+- AI scoring via Claude Haiku 4.5. Async /scan + `GET /api/scans/{id}` polling.
+- Polish: 12-week sparkline, CI badge, live URL, weighted next-steps checklist,
+  done-flag preservation on re-scan, streak badge (flame chip when ≥2 consecutive
+  improving scans).
+- Score history: `GET /api/projects/{id}/scores` + SVG line chart.
+- Top Movers widget: `GET /api/movers`.
+- **Billing v2 (this session)** — plan catalog + trials:
+  - PLANS constant: `solo` ($29/8 builds), `team` ($49/32), `agency` ($149/200),
+    `white_label` (contact_only).
+  - Stripe catalog: `appnsaas_{solo,team,agency}_monthly` lookup_keys.
+    `pro_monthly` deactivated.
+  - `GET /api/billing/plans` — public, powers pricing page.
+  - `GET /api/billing/subscription` — authed, returns
+    `{plan_key, source, plan_name, active_builds_limit, tracked_projects,
+    trial_ends_at, current_period_end, cancel_at_period_end}`.
+  - `POST /api/billing/checkout` now takes `{plan_key}` and dispatches by
+    lookup_key. white_label + unknown → 400.
+  - **7-day auto-trial on Solo** at register (no card required). `trial_started_at`
+    and `trial_ends_at` fields on user doc.
+  - Plan-aware build limit: 402 `code:'build_limit_reached'` (with `limit`,
+    `plan_key`) OR 402 `code:'trial_expired'`.
 - Background jobs (APScheduler in-process): Mon 15:00 UTC weekly digest,
-  03:00 UTC nightly re-scan of projects with score >24h old. `DISABLE_SCHEDULER=1`
-  kills both for CI. `RESEND_FROM_DOMAIN` env for verified sender.
+  03:00 UTC nightly re-scan of projects >24h stale.
 - Weekly Progress Digest email + opt-out + preview + send-test endpoints.
-- Testing agent iterations 1–9, all green (last: 90/90 backend + 100% UI).
+- Testing agent iterations 1–10, all green (last: 106/106 backend).
 
 ## Backlog / next
-- **P7 (deferred, needs its own session): Split server.py into routers.**
-  Current file is 1,809 lines / 32 routes / heavy cross-domain helpers
-  (`get_current_user`, `db`, models). Safe plan: extract `app/deps.py` +
-  `app/config.py` + `app/models.py` + `app/routers/{auth,projects,billing,digest,github}.py`
-  in a dedicated session. Zero behavior change; mechanical refactor with
-  after-move pytest verification per file. Also on this session: add a stale-scan
-  reaper (mark `scans` rows still `running` after 5 min as `error`) — flagged
-  in iteration_9 review.
-- P2: Private-repo scope-upgrade flow (deferred per PF-1).
-- P2: Password strength meter, reveal-password toggle.
-- P3: Session list + per-device revoke in Settings.
-- P3: Verify a real Resend sending domain (user-side action; docs already in place).
-- P6: `resend.Emails.send` wrapped with `asyncio.wait_for(..., timeout=15)`.
+- **Frontend billing v2 (highest priority — pairs with this backend work):**
+  1. New public `/pricing` page consuming `GET /api/billing/plans` with 4 cards
+     (Solo/Team/Agency + White Label contact-sales).
+  2. `BillingProvider` context + `useBilling()` hook + `guard()` helper.
+  3. Rewrite `BillingCard.jsx` to consume `/billing/subscription` shape
+     (plan_key, source, trial_ends_at). Show trial days remaining + upgrade CTA.
+  4. `UpgradeModal` when `POST /api/projects` returns 402 (both
+     `build_limit_reached` and `trial_expired` codes).
+  5. `/billing/success` polling rewrite — call `/api/billing/sync` after payment.
+- **Nightly cron: trial lock** — mark trials past `trial_ends_at` without a
+  billing row so users are prompted to upgrade.
+- **Router split (deferred)** — server.py is now 1,995 lines. Extract
+  auth/projects/billing/digest routers in a dedicated session.
+- Stale-scan reaper (mark scans still `running` after 5 min as error).
+- Wrap `resend.Emails.send` in `asyncio.wait_for(..., timeout=15)`.
+- Remove vestigial `STRIPE_PRO_LOOKUP_KEY` / `FREE_TIER_PROJECT_LIMIT` env vars.
+- Private-repo scope-upgrade flow (deferred per PF-1).
+- Session list + per-device revoke in Settings.
+- Verify a real Resend sending domain (user-side action).

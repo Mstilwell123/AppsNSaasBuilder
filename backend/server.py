@@ -1445,7 +1445,7 @@ async def billing_checkout(payload: BillingCheckoutIn, user: dict = Depends(get_
         line_items=[{"price": price.id, "quantity": 1}],
         success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=f"{origin}/payment/cancel",
-        metadata={"user_id": user["user_id"], "lookup_key": STRIPE_PRO_LOOKUP_KEY},
+        metadata={"user_id": user["user_id"], "lookup_key": plan["lookup_key"], "plan_key": plan_key},
         allow_promotion_codes=True,
     )
     try:
