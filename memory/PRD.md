@@ -65,21 +65,25 @@ publicly-exposed admin password.
   sets `locked_at` on users past `trial_ends_at` with no active subscription;
   idempotent, skips active-Stripe users)**.
 - Weekly Progress Digest email + opt-out + preview + send-test endpoints.
-- **Billing v2 frontend (this session — 2026-02):**
+- **Billing v2 frontend (2026-02):**
   - `/app/frontend/src/lib/billing.jsx` — `BillingProvider`, `useBilling()` hook,
     `guard()` helper, `daysLeft()` util.
-  - `/pricing` page (public) — 4-card grid with "Popular" badge on Team and
-    "Current" ring/badge on the caller's active plan. Trial banner shows
-    days-left. Expired banner surfaces when locked.
-  - `UpgradeModal` — triggered by 402 from `POST /api/projects` in RepoPicker,
-    lists 2-4 upgrade targets with per-plan Stripe checkout CTA.
-  - `BillingCard` rewritten for `/billing/subscription` shape: trial days-left
-    badge, per-source CTAs (Choose your plan / Manage subscription + Change plan).
-  - `LockedGate` in App.js — trial-expired users are redirected from
-    /dashboard, /settings, /repos, /projects/:id, /connect to /pricing.
-    Reachable while locked: /pricing, /payment/success, /payment/cancel.
-- Testing agent iterations 1–11, all green (last: 117/117 backend, 100% of
-  exercised frontend billing flows).
+  - `/pricing` page (public) — 4-card grid with "Popular" on Team and "Current"
+    ring/badge on caller's active plan.
+  - `UpgradeModal` — triggered by 402 from `POST /api/projects` in RepoPicker.
+  - `BillingCard` rewritten for `/billing/subscription` shape.
+  - `LockedGate` in App.js — trial-expired users are redirected to /pricing
+    from every protected route.
+- **Shipped-this-week badge (2026-02):**
+  - `GET /api/activity/weekly` returns
+    `{shipped_this_week, threshold:3, window_days:7}`.
+  - `next_steps.completed_at` stamped on done→true (first time), unset on
+    done→false. Preserved across scans and nightly rescans via
+    `completed_at_map` keyed on step text.
+  - `ShippedBadge` component in Dashboard header — visible when
+    `shipped_this_week ≥ 3`, hidden otherwise. Emerald rocket-badge design.
+- Testing agent iterations 1–12, all green (last: 7/7 new backend +
+  4/4 frontend cases for the badge; full billing v2 flow verified in iter_11).
 
 ## Backlog / next
 - **P1** — "Trial ending" banner at top of the app when `trial_ends_at` within
