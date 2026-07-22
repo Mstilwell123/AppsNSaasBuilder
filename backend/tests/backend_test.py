@@ -881,3 +881,248 @@ def test_movers_per_user_isolation(seeded_with_cleanup):
     finally:
         db.users.delete_many({"user_id": uid_b})
         db.user_sessions.delete_many({"user_id": uid_b})
+
+
+# ================================================================
+# NEW — iteration_7: register / preferences / score history / digest
+# ================================================================
+def _rand_email():
+    return f"TEST_reg_{uuid.uuid4().hex[:8]}@example.com"
+
+
+def _cleanup_email(email):
+    email = email.strip().lower()
+    users = list(db.users.find({"email": email}, {"user_id": 1}))
+    for u in users:
+        db.user_sessions.delete_many({"user_id": u["user_id"]})
+        db.projects.delete_many({"user_id": u["user_id"]})
+        db.scores.delete_many({"user_id": u["user_id"]})
+        db.next_steps.delete_many({"user_id": u["user_id"]})
+    db.users.delete_many({"email": email})
+
+
+# ---------- POST /api/auth/register ----------
+def test_register_happy_path():
+    email = _rand_email()
+    try:
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "passw0rd123", "name": "Reggie"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["email"] == email.lower()
+        assert body["user_id"]
+        # Cookie / session
+        set_cookie = r.headers.get("set-cookie", "")
+        assert "session_token=" in set_cookie
+        session_val = r.cookies.get("session_token")
+        assert session_val
+        me = requests.get(f"{API}/auth/me", headers=auth(session_val))
+        assert me.status_code == 200
+        assert me.json()["user_id"] == body["user_id"]
+        # Mongo doc
+        u = db.users.find_one({"email": email.lower()})
+        assert u["password_hash"].startswith("$2b$")
+        assert u.get("weekly_digest_enabled") is True
+    finally:
+        _cleanup_email(email)
+
+
+def test_register_duplicate_email_409():
+    email = _rand_email()
+    try:
+        r1 = requests.post(f"{API}/auth/register",
+                           json={"email": email, "password": "passw0rd123"})
+        assert r1.status_code == 200
+        r2 = requests.post(f"{API}/auth/register",
+                           json={"email": email, "password": "differentPw123"})
+        assert r2.status_code == 409
+        assert "already exists" in r2.json()["detail"].lower()
+    finally:
+        _cleanup_email(email)
+
+
+def test_register_short_password_400():
+    email = _rand_email()
+    r = requests.post(f"{API}/auth/register",
+                      json={"email": email, "password": "short"})
+    assert r.status_code == 400
+    assert "8" in r.json()["detail"]
+
+
+def test_register_lowercases_email_case_insensitive_dupe():
+    base = f"TEST_case_{uuid.uuid4().hex[:6]}"
+    upper = f"{base}@Example.com"  # mixed case
+    lower = f"{base}@example.com"
+    try:
+        r1 = requests.post(f"{API}/auth/register",
+                           json={"email": upper, "password": "passw0rd123"})
+        assert r1.status_code == 200, r1.text
+        assert r1.json()["email"] == upper.lower()
+        r2 = requests.post(f"{API}/auth/register",
+                           json={"email": lower, "password": "passw0rd123"})
+        assert r2.status_code == 409, r2.text
+    finally:
+        _cleanup_email(lower)
+
+
+def test_register_then_login_works():
+    email = _rand_email()
+    try:
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "passw0rd123"})
+        assert r.status_code == 200
+        rl = requests.post(f"{API}/auth/login",
+                           json={"email": email, "password": "passw0rd123"})
+        assert rl.status_code == 200, rl.text
+        assert rl.json()["email"] == email.lower()
+    finally:
+        _cleanup_email(email)
+
+
+# ---------- GET/PATCH /api/preferences ----------
+def test_preferences_unauth():
+    assert requests.get(f"{API}/preferences").status_code == 401
+
+
+def test_preferences_default_and_patch(seeded):
+    _, token, _ = seeded
+    r = requests.get(f"{API}/preferences", headers=auth(token))
+    assert r.status_code == 200
+    # Default should be True (server treats missing field as True)
+    assert r.json()["weekly_digest_enabled"] is True
+    r2 = requests.patch(f"{API}/preferences", headers=auth(token),
+                        json={"weekly_digest_enabled": False})
+    assert r2.status_code == 200
+    assert r2.json()["weekly_digest_enabled"] is False
+    r3 = requests.get(f"{API}/preferences", headers=auth(token))
+    assert r3.json()["weekly_digest_enabled"] is False
+    r4 = requests.patch(f"{API}/preferences", headers=auth(token),
+                        json={"weekly_digest_enabled": True})
+    assert r4.json()["weekly_digest_enabled"] is True
+
+
+# ---------- GET /api/projects/{id}/scores ----------
+def test_score_history_unauth():
+    assert requests.get(f"{API}/projects/anything/scores").status_code == 401
+
+
+def test_score_history_wrong_owner_404(seeded_with_cleanup):
+    uid, _, _ = seeded_with_cleanup
+    pid, _ = _seed_project(uid, score=50)
+    uid2, token2, _ = _seed_user_and_session()
+    try:
+        r = requests.get(f"{API}/projects/{pid}/scores", headers=auth(token2))
+        assert r.status_code == 404
+    finally:
+        db.users.delete_many({"user_id": uid2})
+        db.user_sessions.delete_many({"user_id": uid2})
+
+
+def test_score_history_chronological_and_shape(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "hist", "ghtester/hist")
+    now = datetime.now(timezone.utc)
+    _seed_score(pid, uid, 40, (now - timedelta(minutes=30)).isoformat())
+    _seed_score(pid, uid, 60, (now - timedelta(minutes=20)).isoformat())
+    _seed_score(pid, uid, 80, (now - timedelta(minutes=10)).isoformat())
+    r = requests.get(f"{API}/projects/{pid}/scores", headers=auth(token))
+    assert r.status_code == 200, r.text
+    arr = r.json()
+    assert [a["score"] for a in arr] == [40, 60, 80]
+    for a in arr:
+        assert "scored_at" in a and a["scored_at"]
+        assert "rationale" in a
+
+
+def test_score_history_limit_clamps(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "lim", "ghtester/lim")
+    now = datetime.now(timezone.utc)
+    for i in range(5):
+        _seed_score(pid, uid, 10 + i, (now - timedelta(minutes=50 - i)).isoformat())
+    r1 = requests.get(f"{API}/projects/{pid}/scores?limit=2", headers=auth(token))
+    assert r1.status_code == 200 and len(r1.json()) == 2
+    r0 = requests.get(f"{API}/projects/{pid}/scores?limit=0", headers=auth(token))
+    assert r0.status_code == 200 and len(r0.json()) == 1  # clamps to 1
+    rbig = requests.get(f"{API}/projects/{pid}/scores?limit=999", headers=auth(token))
+    assert rbig.status_code == 200 and len(rbig.json()) == 5
+
+
+# ---------- Digest preview ----------
+def test_digest_preview_unauth():
+    assert requests.get(f"{API}/digest/preview").status_code == 401
+
+
+def test_digest_preview_no_projects(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.get(f"{API}/digest/preview", headers=auth(token))
+    assert r.status_code == 200
+    assert r.json() == {"available": False}
+
+
+def test_digest_preview_available_and_shape(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    now = datetime.now(timezone.utc)
+    # up-mover: within-7d, +10 delta
+    up = _seed_project_no_score(uid, "up", "ghtester/up")
+    _seed_score(up, uid, 60, (now - timedelta(days=2, minutes=5)).isoformat())
+    _seed_score(up, uid, 70, (now - timedelta(minutes=5)).isoformat())
+    # zero-delta (must be excluded)
+    zp = _seed_project_no_score(uid, "zp", "ghtester/zp")
+    _seed_score(zp, uid, 50, (now - timedelta(days=1)).isoformat())
+    _seed_score(zp, uid, 50, (now - timedelta(minutes=10)).isoformat())
+    # stale (>7d, must be excluded)
+    stale = _seed_project_no_score(uid, "stale", "ghtester/stale")
+    _seed_score(stale, uid, 30, (now - timedelta(days=20)).isoformat())
+    _seed_score(stale, uid, 45, (now - timedelta(days=10)).isoformat())
+    # single-score (not a mover but counted in tracked/avg)
+    ss = _seed_project_no_score(uid, "one", "ghtester/one")
+    _seed_score(ss, uid, 90, (now - timedelta(minutes=1)).isoformat())
+
+    r = requests.get(f"{API}/digest/preview", headers=auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["available"] is True
+    assert body["tracked_count"] == 4  # PROJECTS, not scores
+    assert isinstance(body["avg"], int)
+    # avg = round((70+50+45+90)/4) = round(63.75) = 64
+    assert body["avg"] == 64
+    # Only the up-mover qualifies
+    names = [m["name"] for m in body["movers"]]
+    assert "up" in names
+    assert "zp" not in names  # zero-delta excluded
+    assert "stale" not in names  # >7d excluded
+    assert "one" not in names  # single-score excluded
+    for m in body["movers"]:
+        assert m["delta"] != 0
+    assert isinstance(body["subject"], str) and body["subject"]
+    assert isinstance(body["html"], str) and body["html"]
+    assert isinstance(body["text"], str) and body["text"]
+
+
+# ---------- Digest send-test ----------
+def test_digest_send_test_no_projects_400(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.post(f"{API}/digest/send-test", headers=auth(token))
+    assert r.status_code == 400
+    assert "nothing to digest" in r.json()["detail"].lower()
+
+
+def test_digest_send_test_with_data_returns_coherent_error_or_ok(seeded_with_cleanup):
+    """Resend TEST mode caps sends to API-key owner — so we accept 200 OR 502 (not 500)."""
+    uid, token, _ = seeded_with_cleanup
+    now = datetime.now(timezone.utc)
+    pid = _seed_project_no_score(uid, "sendp", "ghtester/sendp")
+    _seed_score(pid, uid, 50, (now - timedelta(days=1)).isoformat())
+    _seed_score(pid, uid, 70, (now - timedelta(minutes=1)).isoformat())
+    r = requests.post(f"{API}/digest/send-test", headers=auth(token))
+    # Resend TEST mode caps sends to key owner — non-owner recipients get
+    # rejected by Resend. Endpoint MUST convert that to a coherent 502 (never 500).
+    assert r.status_code in (200, 502), f"unexpected {r.status_code}: {r.text[:200]}"
+    if r.status_code == 502:
+        # Try JSON detail; if ingress swallowed body, at least status is coherent.
+        try:
+            body = r.json()
+            assert "send failed" in body.get("detail", "").lower()
+        except ValueError:
+            pass

@@ -31,6 +31,9 @@ async function request(path, { method = "GET", body, headers } = {}) {
 }
 
 export const api = {
+  // Auth
+  register: ({ email, password, name }) =>
+    request("/auth/register", { method: "POST", body: { email, password, name } }),
   exchangeSession: (session_id) => request("/auth/session", { method: "POST", body: { session_id } }),
   me: () => request("/auth/me"),
   logout: () => request("/auth/logout", { method: "POST" }),
@@ -58,6 +61,13 @@ export const api = {
   toggleNextStep: (id, done) =>
     request(`/next-steps/${id}`, { method: "PATCH", body: { done } }),
   topMovers: (limit = 3) => request(`/movers?limit=${limit}`),
+  scoreHistory: (id, limit = 20) => request(`/projects/${id}/scores?limit=${limit}`),
+  // Preferences
+  getPreferences: () => request("/preferences"),
+  updatePreferences: (weekly_digest_enabled) =>
+    request("/preferences", { method: "PATCH", body: { weekly_digest_enabled } }),
+  digestPreview: () => request("/digest/preview"),
+  digestSendTest: () => request("/digest/send-test", { method: "POST" }),
   // Billing
   billingStatus: () => request("/billing/status"),
   billingCheckout: (origin_url) =>

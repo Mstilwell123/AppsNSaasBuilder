@@ -168,8 +168,10 @@ export default function Login() {
 
           <p className="mt-6 text-xs text-muted-foreground text-center">
             First time here?{" "}
-            <span className="text-foreground">Sign in with Google</span>, then set a
-            local password in Settings.
+            <Link to="/register" data-testid="login-register-link" className="text-foreground underline">
+              Create an account
+            </Link>
+            .
           </p>
         </div>
       </div>

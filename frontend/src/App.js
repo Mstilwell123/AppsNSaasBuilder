@@ -8,6 +8,7 @@ import Dashboard from "@/pages/Dashboard";
 import Settings from "@/pages/Settings";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
+import Register from "@/pages/Register";
 import Connect from "@/pages/Connect";
 import RepoPicker from "@/pages/RepoPicker";
 import ProjectDetail from "@/pages/ProjectDetail";
@@ -27,6 +28,7 @@ function AppRouter() {
       <Route path="/" element={<Login />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/register" element={<Register />} />
       <Route path="/payment/success" element={<PaymentSuccess />} />
       <Route path="/payment/cancel" element={<PaymentCancel />} />
       <Route

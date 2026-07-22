@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import Sparkline from "@/components/Sparkline";
+import ScoreHistoryChart from "@/components/ScoreHistoryChart";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import {
@@ -44,14 +45,19 @@ export default function ProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [project, setProject] = useState(null);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanConfirmOpen, setScanConfirmOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const p = await api.getProject(id);
+      const [p, h] = await Promise.all([
+        api.getProject(id),
+        api.scoreHistory(id, 20).catch(() => []),
+      ]);
       setProject(p);
+      setHistory(h);
     } catch (err) {
       toast.error(err?.data?.detail || "Failed to load project");
       if (err?.status === HTTP_NOT_FOUND) navigate("/dashboard", { replace: true });
@@ -70,6 +76,8 @@ export default function ProjectDetail() {
     try {
       const updated = await api.scanProject(id);
       setProject(updated);
+      // Refresh history in the background — best-effort.
+      api.scoreHistory(id, 20).then(setHistory).catch(() => {});
       toast.success("Scan complete");
     } catch (err) {
       toast.error(err?.data?.detail || "Scan failed");
@@ -240,6 +248,32 @@ export default function ProjectDetail() {
               icon={<CircleDot className="h-3 w-3" />}
             />
           </div>
+        </Card>
+
+        <Card
+          className="md:col-span-4 bg-card border border-border rounded-sm p-8"
+          data-testid="project-detail-score-history-card"
+        >
+          <div className="flex items-baseline justify-between mb-4">
+            <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+              Score history
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              {history.length >= 2
+                ? `${history.length} scans`
+                : "Needs at least 2 scans to chart."}
+            </p>
+          </div>
+          {history.length >= 2 ? (
+            <ScoreHistoryChart points={history} />
+          ) : (
+            <p
+              data-testid="project-detail-history-empty"
+              className="text-xs text-muted-foreground"
+            >
+              Run a second scan to see the trend.
+            </p>
+          )}
         </Card>
 
         <Card

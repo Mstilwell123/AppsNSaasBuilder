@@ -1,0 +1,35 @@
+{
+  "summary": "iteration_7 verified. Backend: 74/74 pytest PASS in 22.4s (60 prior + 14 new tests for register / preferences / score-history / digest). Frontend: 9/10 UI checks PASS. Scheduler startup log 'scheduler started: weekly_digest (mon 15:00 UTC), nightly_rescan (03:00 UTC)' confirmed in backend supervisor logs at import time.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Duplicate-email inline error on /register",
+        "issue": "When an already-signed-in user visits /register and submits a duplicate email, Register.useEffect races the 409 handler: because refreshed auth resolves to a valid user, the page navigates to /dashboard before the setErrors({email: ...}) re-render lands — so register-email-error is not observable. Purely a UI race for the specific 'signed-in-then-revisit' path; a signed-out user submitting a duplicate email correctly sees the inline error (verified in backend, endpoint returns 409 'An account with that email already exists'). Suggested fix: on Register mount, if user is signed in, hard-redirect BEFORE render (or short-circuit the submit handler) so the form is never mounted for authed users.",
+        "affected_selectors": ["register-email-error"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Optional polish: on /register mount, if user is already authenticated, redirect immediately (before form render) so duplicate-email flow is only reached signed-out. Backend + primary signed-out UX are correct."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1736 lines — approaching the 700-line 'split into modules' guideline. Suggest breaking into auth.py / projects.py / billing.py / digest.py / scheduler.py routers.",
+    "APScheduler runs IN-PROCESS on FastAPI (AsyncIOScheduler). This is fine for single-worker uvicorn, but if the app is ever scaled to N workers each will fire the same cron independently — leading to N weekly emails per user. Add a dispatcher lock (e.g., mongo advisory doc with unique index on {job_id, run_key}) before scaling horizontally.",
+    "_build_digest_for_user does N+1 mongo queries (one score fetch per project). At scale (>50 projects/user) this will get slow. Consider a $group aggregation on scores collection.",
+    "digest_preview endpoint returns the FULL rendered HTML (~2KB+) for every preview call — fine for on-demand /preview but note it isn't paginated. Acceptable given the endpoint is user-initiated.",
+    "_send_email wraps resend.Emails.send with asyncio.to_thread but does not enforce a timeout — a slow Resend response will hold the FastAPI worker. Consider asyncio.wait_for(..., timeout=15) to fail fast to 502 (currently observed correctly on non-owner recipients).",
+    "score_history sort=-1 + docs.reverse() works but returns only the newest N points chronologically — for a very active project (>100 scans) the chart would silently drop old history. Acceptable given limit clamps to 100."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (74/74)", "frontend": "90% (9/10)"},
+  "test_credentials": "Ephemeral direct-Mongo seeded users + user_sessions (per /app/auth_testing.md). All TEST_* rows wiped after run.",
+  "seed_data_creation": "UI seed: 1 user (TESTUI-*) + session + 2 projects — one with 3 scores at t-30/t-20/t-10 min for score-history chart, one with a single score for the empty-state assertion. Backend seed: TEST_reg_* / TEST_case_* / TEST_uihappy_* users for register tests, cleaned in-test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iteration_7 tests live in /app/backend/tests/backend_test.py under '# NEW — iteration_7: register / preferences / score history / digest'. New helpers: _rand_email(), _cleanup_email(email). Scheduler log signature to grep: 'scheduler started: weekly_digest (mon 15:00 UTC), nightly_rescan (03:00 UTC)'. Digest send-test in Resend TEST mode returns 502 (not 500) for non-key-owner recipients — test accepts 200 OR 502, tolerates non-JSON 502 body (some upstream 502s come back as HTML from the ingress).",
+  "rca of the issue": "Register duplicate-email UI edge case is a mount-time race between useAuth() resolving a signed-in user (→ navigate('/dashboard')) and the /auth/register 409 handler (→ setErrors). Reproduction: (1) POST /api/auth/register email A → cookie set, useAuth.user populates; (2) client-side navigate to /register — form briefly mounts; (3) submit same email A → 409; (4) simultaneously the useEffect fires navigate('/dashboard', {replace:true}) because user is truthy, unmounting the error before it renders. Mitigation: gate the form behind `if (loading || user) return null;` so it never mounts for authed users."
+}

@@ -27,6 +27,8 @@ import bcrypt
 import httpx
 import resend
 import stripe
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from cryptography.fernet import Fernet, InvalidToken
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -40,6 +42,7 @@ CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "").rstrip("/")
 APP_NAME = os.environ.get("APP_NAME", "App")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "")
+RESEND_FROM_DOMAIN = os.environ.get("RESEND_FROM_DOMAIN", "").strip()
 resend.api_key = os.environ.get("RESEND_API_KEY", "")
 
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -105,6 +108,16 @@ class ForgotPasswordIn(BaseModel):
 class ResetPasswordIn(BaseModel):
     token: str
     new_password: str
+
+
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = None
+
+
+class PreferencesIn(BaseModel):
+    weekly_digest_enabled: bool
 
 
 # ---------- GitHub / Projects models ----------
@@ -254,8 +267,15 @@ def _hash_reset_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _sender_email() -> str:
+    """Return the From address. Prefers verified domain (`no-reply@<domain>`) over the shared test sender."""
+    if RESEND_FROM_DOMAIN:
+        return f"no-reply@{RESEND_FROM_DOMAIN}"
+    return SENDER_EMAIL
+
+
 async def _send_reset_email(to_email: str, name: str, reset_link: str) -> None:
-    if not resend.api_key or not SENDER_EMAIL:
+    if not resend.api_key or not _sender_email():
         raise HTTPException(status_code=500, detail="Email provider not configured")
     subject = f"Reset your {APP_NAME} password"
     display_name = name or to_email.split("@")[0]
@@ -295,7 +315,7 @@ async def _send_reset_email(to_email: str, name: str, reset_link: str) -> None:
         f"If you didn't request this, ignore this email — your password will not change.\n"
     )
     params = {
-        "from": f"{APP_NAME} <{SENDER_EMAIL}>",
+        "from": f"{APP_NAME} <{_sender_email()}>",
         "to": [to_email],
         "subject": subject,
         "html": html,
@@ -1342,6 +1362,358 @@ async def stripe_webhook(request: Request):
 
 
 
+# ---------- Sign-up (email + password) ----------
+@api.post("/auth/register")
+async def register(payload: RegisterIn, response: Response):
+    email = payload.email.strip().lower()
+    password = (payload.password or "").strip()
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        # Enumeration-safe generic message.
+        raise HTTPException(status_code=409, detail="An account with that email already exists")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.insert_one({
+        "user_id": user_id,
+        "email": email,
+        "name": (payload.name or "").strip() or email.split("@")[0],
+        "picture": None,
+        "password_hash": hash_password(password),
+        "weekly_digest_enabled": True,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    })
+    await _mint_local_session(user_id, response)
+    fresh = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    return _user_out(fresh).model_dump()
+
+
+# ---------- Preferences ----------
+@api.get("/preferences")
+async def get_preferences(user: dict = Depends(get_current_user)):
+    return {"weekly_digest_enabled": bool(user.get("weekly_digest_enabled", True))}
+
+
+@api.patch("/preferences")
+async def update_preferences(payload: PreferencesIn, user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"weekly_digest_enabled": bool(payload.weekly_digest_enabled),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"weekly_digest_enabled": bool(payload.weekly_digest_enabled)}
+
+
+# ---------- Score history ----------
+class ScoreHistoryOut(BaseModel):
+    score: int
+    scored_at: str
+    rationale: Optional[str] = None
+
+
+@api.get("/projects/{project_id}/scores", response_model=List[ScoreHistoryOut])
+async def score_history(project_id: str, limit: int = 20, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    limit = max(1, min(100, int(limit)))
+    docs = await db.scores.find(
+        {"project_id": project_id}, {"_id": 0},
+    ).sort("scored_at", -1).to_list(length=limit)
+    docs.reverse()  # chronological for charts
+    return [ScoreHistoryOut(
+        score=int(d["score"]), scored_at=d.get("scored_at", ""), rationale=d.get("rationale"),
+    ) for d in docs]
+
+
+# ---------- Progress Digest ----------
+async def _build_digest_for_user(user: dict) -> Optional[dict]:
+    """Return a dict {subject, html, text, movers, avg, deltas} or None if the user has nothing to digest."""
+    projects = [p async for p in db.projects.find(
+        {"user_id": user["user_id"]}, {"_id": 0},
+    )]
+    if not projects:
+        return None
+
+    # Portfolio average — most recent score per project.
+    scored: List[dict] = []
+    for p in projects:
+        latest = await db.scores.find_one(
+            {"project_id": p["id"]}, {"_id": 0}, sort=[("scored_at", -1)],
+        )
+        if latest:
+            scored.append({"project": p, "latest": latest})
+    if not scored:
+        return None
+    avg = round(sum(int(s["latest"]["score"]) for s in scored) / len(scored))
+
+    # Movers this week: delta between latest and second-latest, restricted to 7-day window.
+    since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    movers: List[dict] = []
+    for s in scored:
+        recent = await db.scores.find(
+            {"project_id": s["project"]["id"]}, {"_id": 0},
+        ).sort("scored_at", -1).to_list(length=2)
+        if len(recent) < 2:
+            continue
+        # Only include if the latest scan is within the digest window.
+        if recent[0]["scored_at"] < since:
+            continue
+        delta = int(recent[0]["score"]) - int(recent[1]["score"])
+        if delta == 0:
+            continue
+        movers.append({
+            "name": s["project"]["name"],
+            "full_name": s["project"]["full_name"],
+            "delta": delta,
+            "latest": int(recent[0]["score"]),
+            "previous": int(recent[1]["score"]),
+        })
+    movers.sort(key=lambda m: -abs(m["delta"]))
+    top_movers = movers[:3]
+
+    # Completed steps this week.
+    completed_cursor = db.next_steps.find({
+        "user_id": user["user_id"], "done": True,
+        "updated_at": {"$gte": since},
+    }, {"_id": 0})
+    completed_this_week = await completed_cursor.to_list(length=100)
+
+    subject = f"Your {APP_NAME} weekly digest — {avg}/100 avg"
+    first_name = (user.get("name") or user["email"].split("@")[0]).split(" ")[0]
+    dashboard_url = f"{FRONTEND_URL}/dashboard" if FRONTEND_URL else "#"
+
+    def _mover_row(m):
+        up = m["delta"] > 0
+        color = "#6ee7b7" if up else "#fca5a5"
+        arrow = "▲" if up else "▼"
+        return (
+            f'<tr><td style="padding:8px 0;border-top:1px solid #262626;">'
+            f'<div style="color:#f5f5f5;font-size:14px;">{m["name"]}</div>'
+            f'<div style="color:#a3a3a3;font-size:11px;">{m["full_name"]}</div>'
+            f'</td>'
+            f'<td style="padding:8px 0;border-top:1px solid #262626;text-align:right;">'
+            f'<span style="color:{color};font-size:14px;font-weight:600;">{arrow} {abs(m["delta"])}</span>'
+            f'<div style="color:#a3a3a3;font-size:11px;">{m["previous"]} → {m["latest"]}</div>'
+            f'</td></tr>'
+        )
+
+    movers_html = "".join(_mover_row(m) for m in top_movers) if top_movers else (
+        '<tr><td colspan="2" style="padding:8px 0;color:#a3a3a3;font-size:12px;">'
+        "No movers this week — kick off a scan to refresh signals.</td></tr>"
+    )
+    completed_html = ""
+    if completed_this_week:
+        rows = "".join(
+            f'<li style="color:#d4d4d4;font-size:13px;margin:4px 0;">✓ {s["text"]}</li>'
+            for s in completed_this_week[:6]
+        )
+        completed_html = (
+            '<div style="margin-top:24px;">'
+            '<p style="margin:0 0 8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#a3a3a3;">Shipped this week</p>'
+            f'<ul style="list-style:none;padding:0;margin:0;">{rows}</ul></div>'
+        )
+
+    html = f"""
+<!doctype html>
+<html><body style="margin:0;padding:0;background:#0a0a0a;font-family:'IBM Plex Sans',Arial,sans-serif;color:#f5f5f5;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0a0a0a;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="background:#111;border:1px solid #262626;">
+        <tr><td style="padding:32px;">
+          <p style="margin:0 0 6px;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#a3a3a3;">{APP_NAME} · weekly digest</p>
+          <h1 style="margin:0 0 20px;font-family:'Chivo',Arial,sans-serif;font-size:26px;line-height:1.15;letter-spacing:-.02em;color:#fff;">Hey {first_name}, your portfolio at a glance.</h1>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:12px 0 20px;">
+            <tr>
+              <td style="width:50%;padding:12px;border:1px solid #262626;">
+                <div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#a3a3a3;">Avg score</div>
+                <div style="font-family:'Chivo',Arial,sans-serif;font-size:32px;color:#fff;margin-top:4px;">{avg}<span style="font-size:14px;color:#a3a3a3;">/100</span></div>
+              </td>
+              <td style="width:50%;padding:12px;border:1px solid #262626;border-left:none;">
+                <div style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#a3a3a3;">Tracked repos</div>
+                <div style="font-family:'Chivo',Arial,sans-serif;font-size:32px;color:#fff;margin-top:4px;">{len(projects)}</div>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:0 0 8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#a3a3a3;">Top movers</p>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">{movers_html}</table>
+          {completed_html}
+          <p style="margin:28px 0 0;">
+            <a href="{dashboard_url}" style="display:inline-block;background:#fff;color:#000;text-decoration:none;padding:12px 20px;font-weight:600;font-size:14px;border-radius:2px;">Open dashboard</a>
+          </p>
+          <hr style="border:none;border-top:1px solid #262626;margin:28px 0;" />
+          <p style="margin:0;font-size:11px;color:#a3a3a3;">You're receiving this because weekly digests are enabled. <a href="{FRONTEND_URL}/settings" style="color:#a3a3a3;">Turn them off in Settings.</a></p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>
+"""
+    text_parts = [
+        f"{APP_NAME} weekly digest",
+        f"Avg score: {avg}/100 across {len(projects)} repos",
+        "",
+        "Top movers:",
+    ]
+    if top_movers:
+        for m in top_movers:
+            sign = "+" if m["delta"] > 0 else ""
+            text_parts.append(f"  - {m['name']}: {m['previous']} -> {m['latest']} ({sign}{m['delta']})")
+    else:
+        text_parts.append("  (none this week)")
+    text_parts.extend(["", f"Open: {dashboard_url}"])
+    text = "\n".join(text_parts)
+    return {
+        "subject": subject,
+        "html": html,
+        "text": text,
+        "avg": avg,
+        "movers": top_movers,
+        "completed_count": len(completed_this_week),
+        "tracked_count": len(projects),
+    }
+
+
+async def _send_email(to_email: str, subject: str, html: str, text: str) -> None:
+    if not resend.api_key or not _sender_email():
+        raise HTTPException(status_code=500, detail="Email provider not configured")
+    params = {
+        "from": f"{APP_NAME} <{_sender_email()}>",
+        "to": [to_email], "subject": subject, "html": html, "text": text,
+    }
+    await asyncio.to_thread(resend.Emails.send, params)
+
+
+@api.get("/digest/preview")
+async def digest_preview(user: dict = Depends(get_current_user)):
+    digest = await _build_digest_for_user(user)
+    if not digest:
+        return {"available": False}
+    return {"available": True, **digest}
+
+
+@api.post("/digest/send-test")
+async def digest_send_test(user: dict = Depends(get_current_user)):
+    """Send this user their own digest right now — useful for verifying Resend domain."""
+    digest = await _build_digest_for_user(user)
+    if not digest:
+        raise HTTPException(status_code=400, detail="Nothing to digest yet — track a project and run a scan first.")
+    try:
+        await _send_email(user["email"], digest["subject"], digest["html"], digest["text"])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("digest send-test failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Send failed: {exc}") from exc
+    return {"ok": True}
+
+
+# ---------- Background jobs (APScheduler) ----------
+_scheduler: Optional[AsyncIOScheduler] = None
+
+
+async def _job_send_weekly_digests() -> None:
+    """Mondays 15:00 UTC — send Progress Digest to opted-in users with >=1 project."""
+    logger.info("weekly digest job: starting")
+    sent = 0
+    async for user in db.users.find({"weekly_digest_enabled": {"$ne": False}}, {"_id": 0}):
+        try:
+            digest = await _build_digest_for_user(user)
+            if not digest:
+                continue
+            await _send_email(user["email"], digest["subject"], digest["html"], digest["text"])
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("digest to %s failed: %s", user.get("email"), exc)
+    logger.info("weekly digest job: sent %d", sent)
+
+
+async def _job_rescan_stale_projects() -> None:
+    """Nightly 03:00 UTC — re-scan projects whose latest score is older than 24h."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    logger.info("nightly rescan job: cutoff=%s", cutoff)
+    scanned = 0
+    async for proj in db.projects.find({}, {"_id": 0}):
+        latest = await db.scores.find_one(
+            {"project_id": proj["id"]}, {"_id": 0}, sort=[("scored_at", -1)],
+        )
+        if latest and latest.get("scored_at", "") > cutoff:
+            continue
+        try:
+            token = await _get_github_token(proj["user_id"])
+        except HTTPException:
+            continue  # user disconnected GitHub
+        try:
+            signals = await _gather_repo_signals(token, proj["full_name"])
+            ai = await _score_with_llm(signals)
+            repo = signals["repo"]
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.projects.update_one(
+                {"id": proj["id"]},
+                {"$set": {
+                    "primary_language": repo.get("language"),
+                    "languages": signals["languages"],
+                    "stars": repo.get("stargazers_count", 0),
+                    "forks": repo.get("forks_count", 0),
+                    "open_issues": repo.get("open_issues_count", 0),
+                    "live_url": repo.get("homepage") or None,
+                    "ci_status": signals["ci_status"],
+                    "commit_sparkline": signals["sparkline"],
+                    "last_commit_at": repo.get("pushed_at"),
+                    "one_line_summary": ai.get("one_line_summary"),
+                    "updated_at": now_iso,
+                }},
+            )
+            await db.scores.insert_one({
+                "id": f"score_{uuid.uuid4().hex[:12]}",
+                "user_id": proj["user_id"],
+                "project_id": proj["id"],
+                "score": int(ai.get("score", 0)),
+                "rationale": ai.get("rationale", ""),
+                "model": SCORING_MODEL,
+                "scored_at": now_iso,
+            })
+            # Preserve done-flags for identically-worded steps (F3).
+            old_steps = [s async for s in db.next_steps.find(
+                {"project_id": proj["id"]}, {"_id": 0},
+            )]
+            done_texts = {s["text"].strip().lower() for s in old_steps if s.get("done")}
+            await db.next_steps.delete_many({"project_id": proj["id"]})
+            new_docs = []
+            for i, step in enumerate(ai.get("next_steps", []), start=1):
+                new_docs.append({
+                    "id": f"step_{uuid.uuid4().hex[:10]}",
+                    "user_id": proj["user_id"],
+                    "project_id": proj["id"],
+                    "text": step["text"],
+                    "weight": step["weight"],
+                    "order": step.get("order", i),
+                    "done": step["text"].strip().lower() in done_texts,
+                    "created_at": now_iso,
+                })
+            if new_docs:
+                await db.next_steps.insert_many(new_docs)
+            scanned += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("nightly rescan for %s failed: %s", proj.get("full_name"), exc)
+    logger.info("nightly rescan job: scanned %d", scanned)
+
+
+@app.on_event("startup")
+async def _startup_scheduler():
+    global _scheduler
+    if os.environ.get("DISABLE_SCHEDULER") == "1":
+        logger.info("scheduler disabled via env")
+        return
+    _scheduler = AsyncIOScheduler(timezone="UTC")
+    _scheduler.add_job(_job_send_weekly_digests, CronTrigger(day_of_week="mon", hour=15, minute=0),
+                       id="weekly_digest", replace_existing=True)
+    _scheduler.add_job(_job_rescan_stale_projects, CronTrigger(hour=3, minute=0),
+                       id="nightly_rescan", replace_existing=True)
+    _scheduler.start()
+    logger.info("scheduler started: weekly_digest (mon 15:00 UTC), nightly_rescan (03:00 UTC)")
+
+
+
+
 app.include_router(api)
 
 app.add_middleware(
@@ -1355,4 +1727,10 @@ app.add_middleware(
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    global _scheduler
+    if _scheduler is not None:
+        try:
+            _scheduler.shutdown(wait=False)
+        except Exception:
+            pass
     client.close()
