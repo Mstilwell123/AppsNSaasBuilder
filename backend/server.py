@@ -62,6 +62,77 @@ STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRO_LOOKUP_KEY = os.environ.get("STRIPE_PRO_LOOKUP_KEY", "pro_monthly")
 FREE_TIER_PROJECT_LIMIT = int(os.environ.get("FREE_TIER_PROJECT_LIMIT", "3"))
 
+# Plan catalog — mirrors Stripe lookup_keys. Sold plans only; no free tier.
+# `active_builds` gates POST /api/projects; `seats` is marketing-only for now
+# (no teams feature). Trial applies to Solo Builder auto-enrolled at signup.
+PLANS = {
+    "solo": {
+        "name": "Solo Builder",
+        "blurb": "For one person shipping their own projects.",
+        "price_cents": 2900,
+        "active_builds": 8,
+        "seats": 1,
+        "features": [
+            "8 builds in progress",
+            "Milestone + progress tracking",
+            "Deployment & status history",
+            "Email support",
+        ],
+        "lookup_key": "appnsaas_solo_monthly",
+        "trial_days": 7,
+    },
+    "team": {
+        "name": "Team",
+        "blurb": "For a small team running a lot at once.",
+        "price_cents": 4900,
+        "active_builds": 32,
+        "seats": 4,
+        "highlight": True,
+        "features": [
+            "32 builds in progress",
+            "Up to 4 team members",
+            "Client-shareable progress views",
+            "Integrations & API access",
+            "Priority support",
+        ],
+        "lookup_key": "appnsaas_team_monthly",
+        "trial_days": 7,
+    },
+    "agency": {
+        "name": "Agency",
+        "blurb": "For agencies delivering builds for clients.",
+        "price_cents": 14900,
+        "active_builds": 200,
+        "seats": 25,
+        "features": [
+            "200 builds in progress",
+            "5 to 25 team members",
+            "Client-shareable progress views",
+            "Audit log & SSO-ready",
+            "Dedicated support",
+        ],
+        "lookup_key": "appnsaas_agency_monthly",
+        "trial_days": None,
+    },
+    "white_label": {
+        "name": "White Label",
+        "blurb": "Sold by conversation. Contact sales.",
+        "price_cents": None,
+        "active_builds": None,
+        "seats": None,
+        "features": [
+            "Custom branding",
+            "Dedicated infrastructure",
+            "$1,200 setup + $499/mo",
+        ],
+        "lookup_key": None,
+        "trial_days": None,
+        "contact_only": True,
+    },
+}
+TRIAL_PLAN_KEY = "solo"
+TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "7"))
+
 EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 SESSION_TTL_DAYS = 7
 MIN_PASSWORD_LENGTH = 8
@@ -941,19 +1012,29 @@ async def track_project(payload: TrackRepoIn, user: dict = Depends(get_current_u
     if existing:
         return await _project_to_out(existing)
 
-    # Free-tier project cap.
-    plan = await _get_plan(user["user_id"])
-    if plan == "free":
-        tracked = await db.projects.count_documents({"user_id": user["user_id"]})
-        if tracked >= FREE_TIER_PROJECT_LIMIT:
-            raise HTTPException(
-                status_code=402,
-                detail={
-                    "code": "free_tier_limit_reached",
-                    "message": f"Free plan is limited to {FREE_TIER_PROJECT_LIMIT} tracked repos. Upgrade to Pro for unlimited.",
-                    "limit": FREE_TIER_PROJECT_LIMIT,
-                },
-            )
+    # Plan-aware build-limit gate.
+    resolved = await _resolve_plan(user)
+    if resolved["plan_key"] == "expired":
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "trial_expired",
+                "message": "Your trial has ended. Upgrade to continue tracking projects.",
+                "trial_ends_at": resolved.get("trial_ends_at"),
+            },
+        )
+    limit = resolved["active_builds"] or 0
+    tracked = await db.projects.count_documents({"user_id": user["user_id"]})
+    if tracked >= limit:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "build_limit_reached",
+                "message": f"Your {PLANS[resolved['plan_key']]['name']} plan is capped at {limit} builds in progress. Upgrade or complete one first.",
+                "limit": limit,
+                "plan_key": resolved["plan_key"],
+            },
+        )
 
     token = await _get_github_token(user["user_id"])
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -1206,20 +1287,102 @@ async def top_movers(
 # ---------- Billing (Stripe subscription) ----------
 class BillingCheckoutIn(BaseModel):
     origin_url: str
+    plan_key: Optional[str] = None  # "solo" | "team" | "agency"
+
+
+@api.get("/billing/plans")
+async def billing_plans():
+    """Public: returns marketing catalog for the pricing page."""
+    out = []
+    for key, p in PLANS.items():
+        out.append({
+            "plan_key": key,
+            "name": p["name"],
+            "blurb": p["blurb"],
+            "price_cents": p["price_cents"],
+            "active_builds": p["active_builds"],
+            "seats": p["seats"],
+            "features": p["features"],
+            "trial_days": p.get("trial_days"),
+            "highlight": bool(p.get("highlight")),
+            "contact_only": bool(p.get("contact_only")),
+            "lookup_key": p["lookup_key"],
+        })
+    return {"plans": out}
+
+
+@api.get("/billing/subscription")
+async def billing_subscription(user: dict = Depends(get_current_user)):
+    resolved = await _resolve_plan(user)
+    tracked = await db.projects.count_documents({"user_id": user["user_id"]})
+    plan_meta = PLANS.get(resolved["plan_key"])
+    return {
+        "plan_key": resolved["plan_key"],
+        "source": resolved["source"],  # "stripe" | "trial" | "none"
+        "plan_name": plan_meta["name"] if plan_meta else None,
+        "active_builds_limit": resolved["active_builds"],
+        "tracked_projects": tracked,
+        "trial_ends_at": resolved.get("trial_ends_at"),
+        "current_period_end": resolved.get("current_period_end"),
+        "cancel_at_period_end": resolved.get("cancel_at_period_end"),
+    }
 
 
 def _plan_for(billing: Optional[dict]) -> str:
     if not billing:
-        return "free"
+        return "none"
     status = (billing.get("subscription_status") or "").lower()
     if status in {"active", "trialing"}:
-        return "pro"
-    return "free"
+        return billing.get("plan_key") or "solo"
+    return "none"
+
+
+async def _resolve_plan(user: dict) -> dict:
+    """Return {plan_key, source, active_builds, trial_ends_at, expires_at}.
+
+    Precedence: active Stripe subscription > in-trial user > expired/no plan.
+    """
+    b = await db.billing.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    stripe_plan = _plan_for(b)
+    if stripe_plan != "none":
+        p = PLANS.get(stripe_plan, PLANS["solo"])
+        return {
+            "plan_key": stripe_plan, "source": "stripe",
+            "active_builds": p["active_builds"],
+            "current_period_end": (b or {}).get("current_period_end"),
+            "cancel_at_period_end": bool((b or {}).get("cancel_at_period_end")),
+            "trial_ends_at": None,
+        }
+    # Fall back to sign-up trial.
+    trial_ends_at = user.get("trial_ends_at")
+    if trial_ends_at:
+        end = trial_ends_at
+        if isinstance(end, str):
+            end = datetime.fromisoformat(end)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        if end > datetime.now(timezone.utc):
+            p = PLANS[TRIAL_PLAN_KEY]
+            return {
+                "plan_key": TRIAL_PLAN_KEY, "source": "trial",
+                "active_builds": p["active_builds"],
+                "trial_ends_at": trial_ends_at,
+                "current_period_end": None, "cancel_at_period_end": False,
+            }
+    return {
+        "plan_key": "expired", "source": "none",
+        "active_builds": 0,
+        "trial_ends_at": trial_ends_at, "current_period_end": None,
+        "cancel_at_period_end": False,
+    }
 
 
 async def _get_plan(user_id: str) -> str:
-    b = await db.billing.find_one({"user_id": user_id}, {"_id": 0})
-    return _plan_for(b)
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not u:
+        return "none"
+    r = await _resolve_plan(u)
+    return r["plan_key"]
 
 
 @api.get("/billing/status")
@@ -1261,11 +1424,16 @@ async def _get_or_create_customer(user: dict) -> str:
 
 @api.post("/billing/checkout")
 async def billing_checkout(payload: BillingCheckoutIn, user: dict = Depends(get_current_user)):
+    # Resolve which plan the caller wants; default to solo if not specified.
+    plan_key = (payload.plan_key or TRIAL_PLAN_KEY).lower()
+    plan = PLANS.get(plan_key)
+    if not plan or not plan.get("lookup_key"):
+        raise HTTPException(status_code=400, detail=f"Unknown or non-checkoutable plan: {plan_key}")
     prices = await asyncio.to_thread(
-        lambda: stripe.Price.list(lookup_keys=[STRIPE_PRO_LOOKUP_KEY], active=True, limit=1).data,
+        lambda: stripe.Price.list(lookup_keys=[plan["lookup_key"]], active=True, limit=1).data,
     )
     if not prices:
-        raise HTTPException(status_code=500, detail="Pro price not configured")
+        raise HTTPException(status_code=500, detail=f"Price for {plan_key} not configured")
     price = prices[0]
 
     customer_id = await _get_or_create_customer(user)
@@ -1299,7 +1467,8 @@ async def billing_checkout(payload: BillingCheckoutIn, user: dict = Depends(get_
         "session_id": session.id,
         "user_id": user["user_id"],
         "customer_id": customer_id,
-        "lookup_key": STRIPE_PRO_LOOKUP_KEY,
+        "lookup_key": plan["lookup_key"],
+        "plan_key": plan_key,
         "amount": (price.unit_amount or 0),
         "currency": price.currency,
         "status": "initiated",
@@ -1361,17 +1530,30 @@ async def _apply_subscription_state(customer_id: str, subscription: dict) -> Non
     period_end_iso = None
     if period_end:
         period_end_iso = datetime.fromtimestamp(int(period_end), tz=timezone.utc).isoformat()
+    # Derive plan_key from the subscription's first line item lookup_key.
+    plan_key = None
+    try:
+        items = subscription.get("items", {}).get("data", []) or []
+        if items:
+            lookup = (items[0].get("price") or {}).get("lookup_key")
+            for k, v in PLANS.items():
+                if v.get("lookup_key") == lookup:
+                    plan_key = k
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+    update = {
+        "customer_id": customer_id,
+        "subscription_id": sub_id,
+        "subscription_status": status,
+        "cancel_at_period_end": cancel_at_period_end,
+        "current_period_end": period_end_iso,
+        "updated_at": now_iso,
+    }
+    if plan_key:
+        update["plan_key"] = plan_key
     await db.billing.update_one(
-        {"customer_id": customer_id},
-        {"$set": {
-            "customer_id": customer_id,
-            "subscription_id": sub_id,
-            "subscription_status": status,
-            "cancel_at_period_end": cancel_at_period_end,
-            "current_period_end": period_end_iso,
-            "updated_at": now_iso,
-        }},
-        upsert=True,
+        {"customer_id": customer_id}, {"$set": update}, upsert=True,
     )
 
 
@@ -1448,6 +1630,7 @@ async def register(payload: RegisterIn, response: Response):
         raise HTTPException(status_code=409, detail="An account with that email already exists")
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     now_iso = datetime.now(timezone.utc).isoformat()
+    trial_ends_at = (datetime.now(timezone.utc) + timedelta(days=TRIAL_DAYS)).isoformat()
     await db.users.insert_one({
         "user_id": user_id,
         "email": email,
@@ -1455,6 +1638,8 @@ async def register(payload: RegisterIn, response: Response):
         "picture": None,
         "password_hash": hash_password(password),
         "weekly_digest_enabled": True,
+        "trial_started_at": now_iso,
+        "trial_ends_at": trial_ends_at,
         "created_at": now_iso,
         "updated_at": now_iso,
     })

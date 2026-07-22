@@ -24,16 +24,19 @@ db = mongo[DB_NAME]
 
 
 # ---------- helpers ----------
-def _seed_user_and_session(prefix="TEST", with_password=False):
+def _seed_user_and_session(prefix="TEST", with_password=False, trial_days=7):
     uid = f"{prefix}-user-{uuid.uuid4().hex[:8]}"
     token = f"TEST_session_{uuid.uuid4().hex}"
     now = datetime.now(timezone.utc)
+    trial_ends_at = (now + timedelta(days=trial_days)).isoformat() if trial_days is not None else None
     doc = {
         "user_id": uid,
         "email": f"TEST.{uid}@example.com",
         "name": "Test User",
         "picture": None,
         "password_hash": None,
+        "trial_started_at": now.isoformat(),
+        "trial_ends_at": trial_ends_at,
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
@@ -627,13 +630,13 @@ def test_billing_status_fresh_user(billing_seeded):
     r = requests.get(f"{API}/billing/status", headers=auth(token))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["plan"] == "free"
+    # Legacy shape: no billing row → plan="none" post-migration.
+    assert body["plan"] in ("free", "none")
     assert body["subscription_status"] is None
     assert body["cancel_at_period_end"] is False
     assert body["customer_id"] is None
     assert body["subscription_id"] is None
     assert body["tracked_projects"] == 0
-    assert body["free_tier_limit"] == FREE_TIER_LIMIT
 
 
 def test_billing_checkout_creates_session_and_records(billing_seeded):
@@ -725,41 +728,45 @@ def test_stripe_webhook_missing_signature_400():
     assert r.status_code == 400
 
 
-# ---------- Free-tier gate ----------
+# ---------- Plan-aware build-limit gate (migrated from free-tier gate) ----------
 def test_free_tier_gate_blocks_at_limit(billing_seeded):
+    """Trial (solo) user hitting the 8-build limit → build_limit_reached."""
     uid, token, _ = billing_seeded
     _seed_github_connection(uid)
-    # seed 3 projects (at limit)
-    for i in range(FREE_TIER_LIMIT):
+    # Seed 8 projects to reach solo trial limit
+    for i in range(8):
         _seed_project(uid, name=f"p{i}", full_name=f"gh/p{i}")
     r = requests.post(f"{API}/projects", headers=auth(token),
                       json={"github_repo_id": 987654})
     assert r.status_code == 402, r.text
     detail = r.json()["detail"]
-    assert detail["code"] == "free_tier_limit_reached"
-    assert detail["limit"] == FREE_TIER_LIMIT
-    assert isinstance(detail["message"], str) and len(detail["message"]) > 0
+    assert detail["code"] == "build_limit_reached"
+    assert detail["limit"] == 8
+    assert detail["plan_key"] == "solo"
+    assert "Solo Builder" in detail["message"]
+    assert "8 builds" in detail["message"]
 
 
 def test_pro_tier_bypasses_free_gate(billing_seeded):
+    """Team subscriber's higher build limit bypasses old 3-project cap."""
     uid, token, _ = billing_seeded
     _seed_github_connection(uid)
-    for i in range(FREE_TIER_LIMIT):
+    for i in range(8):
         _seed_project(uid, name=f"p{i}", full_name=f"gh/p{i}")
-    # upsert active pro billing row
     db.billing.update_one(
         {"user_id": uid},
         {"$set": {
             "user_id": uid,
             "customer_id": "cus_test_manual",
             "subscription_status": "active",
+            "plan_key": "team",
             "cancel_at_period_end": False,
         }},
         upsert=True,
     )
     r = requests.post(f"{API}/projects", headers=auth(token),
                       json={"github_repo_id": 987654})
-    # Gate should be bypassed → not 402. Real GitHub will 404/502 the fake token.
+    # Team = 32 builds, 8 seeded → gate passes, then GH fake token fails.
     assert r.status_code != 402
     assert r.status_code in (404, 502)
 
@@ -1370,3 +1377,269 @@ def test_scan_get_unknown_id_404(seeded_with_cleanup):
     _, token, _ = seeded_with_cleanup
     r = requests.get(f"{API}/scans/does-not-exist", headers=auth(token))
     assert r.status_code == 404
+
+
+# ================================================================
+# iteration_10 — Billing migration: plans catalog + subscription + plan-aware checkout
+# ================================================================
+def test_billing_plans_public_no_auth():
+    """GET /api/billing/plans is PUBLIC and returns 4 plans with correct shape."""
+    r = requests.get(f"{API}/billing/plans")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "plans" in body
+    plans = body["plans"]
+    by_key = {p["plan_key"]: p for p in plans}
+    assert set(by_key.keys()) == {"solo", "team", "agency", "white_label"}, by_key.keys()
+
+    solo = by_key["solo"]
+    assert solo["price_cents"] == 2900
+    assert solo["active_builds"] == 8
+    assert solo["lookup_key"] == "appnsaas_solo_monthly"
+    assert solo["contact_only"] is False
+    assert solo["name"] == "Solo Builder"
+
+    team = by_key["team"]
+    assert team["price_cents"] == 4900
+    assert team["active_builds"] == 32
+    assert team["lookup_key"] == "appnsaas_team_monthly"
+    assert team["contact_only"] is False
+
+    agency = by_key["agency"]
+    assert agency["price_cents"] == 14900
+    assert agency["active_builds"] == 200
+    assert agency["lookup_key"] == "appnsaas_agency_monthly"
+    assert agency["contact_only"] is False
+
+    wl = by_key["white_label"]
+    assert wl["contact_only"] is True
+    assert wl["price_cents"] is None
+    assert wl["lookup_key"] is None
+
+
+def test_billing_subscription_unauth():
+    assert requests.get(f"{API}/billing/subscription").status_code == 401
+
+
+def test_billing_subscription_fresh_registered_user():
+    """Newly-registered user gets an in-trial Solo subscription for ~7 days."""
+    email = _rand_email()
+    try:
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "passw0rd123"})
+        assert r.status_code == 200, r.text
+        session_val = r.cookies.get("session_token")
+        assert session_val
+        sub = requests.get(f"{API}/billing/subscription", headers=auth(session_val))
+        assert sub.status_code == 200, sub.text
+        body = sub.json()
+        assert body["plan_key"] == "solo"
+        assert body["source"] == "trial"
+        assert body["plan_name"] == "Solo Builder"
+        assert body["active_builds_limit"] == 8
+        assert body["tracked_projects"] == 0
+        assert body["trial_ends_at"], "trial_ends_at should be set on fresh user"
+        # ~7 days out (allow drift)
+        end = datetime.fromisoformat(body["trial_ends_at"])
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        delta = end - datetime.now(timezone.utc)
+        assert timedelta(days=6, hours=23) <= delta <= timedelta(days=7, minutes=5), delta
+    finally:
+        _cleanup_email(email)
+
+
+def test_billing_subscription_expired_trial(billing_seeded):
+    """A user whose trial_ends_at is in the past → plan_key='expired'."""
+    uid, token, _ = billing_seeded
+    db.users.update_one(
+        {"user_id": uid},
+        {"$set": {"trial_ends_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()}},
+    )
+    r = requests.get(f"{API}/billing/subscription", headers=auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_key"] == "expired"
+    assert body["source"] == "none"
+    assert body["plan_name"] is None
+    assert body["active_builds_limit"] == 0
+
+
+def test_billing_subscription_active_team_stripe(billing_seeded):
+    """Billing row with active team subscription → source='stripe', team plan resolved."""
+    uid, token, _ = billing_seeded
+    db.billing.update_one(
+        {"user_id": uid},
+        {"$set": {
+            "user_id": uid,
+            "customer_id": "cus_test_team",
+            "subscription_status": "active",
+            "plan_key": "team",
+            "cancel_at_period_end": False,
+        }},
+        upsert=True,
+    )
+    r = requests.get(f"{API}/billing/subscription", headers=auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_key"] == "team"
+    assert body["source"] == "stripe"
+    assert body["plan_name"] == "Team"
+    assert body["active_builds_limit"] == 32
+
+
+# ---------- Plan-aware checkout ----------
+def _checkout(token, plan_key=None):
+    payload = {"origin_url": "https://example.com"}
+    if plan_key is not None:
+        payload["plan_key"] = plan_key
+    return requests.post(f"{API}/billing/checkout", headers=auth(token), json=payload)
+
+
+def test_checkout_plan_solo_records_lookup_key(billing_seeded):
+    uid, token, _ = billing_seeded
+    r = _checkout(token, "solo")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "checkout.stripe.com" in data["checkout_url"]
+    sid = data["session_id"]
+    tx = db.payment_transactions.find_one({"session_id": sid})
+    assert tx["plan_key"] == "solo"
+    assert tx["lookup_key"] == "appnsaas_solo_monthly"
+
+
+def test_checkout_plan_team_records_lookup_key(billing_seeded):
+    uid, token, _ = billing_seeded
+    r = _checkout(token, "team")
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    tx = db.payment_transactions.find_one({"session_id": sid})
+    assert tx["plan_key"] == "team"
+    assert tx["lookup_key"] == "appnsaas_team_monthly"
+
+
+def test_checkout_plan_agency_records_lookup_key(billing_seeded):
+    uid, token, _ = billing_seeded
+    r = _checkout(token, "agency")
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    tx = db.payment_transactions.find_one({"session_id": sid})
+    assert tx["plan_key"] == "agency"
+    assert tx["lookup_key"] == "appnsaas_agency_monthly"
+
+
+def test_checkout_plan_white_label_400(billing_seeded):
+    _, token, _ = billing_seeded
+    r = _checkout(token, "white_label")
+    assert r.status_code == 400
+    assert "unknown or non-checkoutable" in r.json()["detail"].lower()
+
+
+def test_checkout_plan_bogus_400(billing_seeded):
+    _, token, _ = billing_seeded
+    r = _checkout(token, "bogus")
+    assert r.status_code == 400
+
+
+def test_checkout_no_plan_defaults_to_solo(billing_seeded):
+    _, token, _ = billing_seeded
+    r = _checkout(token, None)
+    assert r.status_code == 200, r.text
+    sid = r.json()["session_id"]
+    tx = db.payment_transactions.find_one({"session_id": sid})
+    assert tx["plan_key"] == "solo"
+    assert tx["lookup_key"] == "appnsaas_solo_monthly"
+
+
+# ---------- Build-limit gate — plan-aware ----------
+def test_build_limit_trial_user_at_solo_cap(billing_seeded):
+    """Trial (solo) user with 8 projects → 402 build_limit_reached with plan_key='solo'."""
+    uid, token, _ = billing_seeded
+    _seed_github_connection(uid)
+    for i in range(8):
+        _seed_project(uid, name=f"bp{i}", full_name=f"gh/bp{i}")
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 555001})
+    assert r.status_code == 402, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "build_limit_reached"
+    assert detail["limit"] == 8
+    assert detail["plan_key"] == "solo"
+    assert "Solo Builder" in detail["message"]
+    assert "8 builds" in detail["message"]
+
+
+def test_build_limit_expired_trial_no_billing(billing_seeded):
+    """Expired trial + no billing → 402 trial_expired."""
+    uid, token, _ = billing_seeded
+    _seed_github_connection(uid)
+    db.users.update_one(
+        {"user_id": uid},
+        {"$set": {"trial_ends_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()}},
+    )
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 555002})
+    assert r.status_code == 402, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "trial_expired"
+    assert "trial has ended" in detail["message"].lower()
+
+
+def test_build_limit_team_at_32(billing_seeded):
+    """Team subscriber with 32 projects → 402 build_limit_reached with plan_key='team', limit=32."""
+    uid, token, _ = billing_seeded
+    _seed_github_connection(uid)
+    db.billing.update_one(
+        {"user_id": uid},
+        {"$set": {
+            "user_id": uid,
+            "customer_id": "cus_test_team_32",
+            "subscription_status": "active",
+            "plan_key": "team",
+            "cancel_at_period_end": False,
+        }},
+        upsert=True,
+    )
+    for i in range(32):
+        _seed_project(uid, name=f"tp{i}", full_name=f"gh/tp{i}")
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 555003})
+    assert r.status_code == 402, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "build_limit_reached"
+    assert detail["limit"] == 32
+    assert detail["plan_key"] == "team"
+
+
+def test_build_limit_under_limit_passes_gate(billing_seeded):
+    """Solo trial user with 7 projects passes gate (GH fake token then errors)."""
+    uid, token, _ = billing_seeded
+    _seed_github_connection(uid)
+    for i in range(7):
+        _seed_project(uid, name=f"up{i}", full_name=f"gh/up{i}")
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 555004})
+    # Gate passes; GH fake token → 404 or 502.
+    assert r.status_code != 402
+    assert r.status_code in (404, 502)
+
+
+# ---------- Regression: register still sets trial_ends_at ----------
+def test_register_sets_trial_dates():
+    email = _rand_email()
+    try:
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "passw0rd123"})
+        assert r.status_code == 200
+        u = db.users.find_one({"email": email.lower()})
+        assert u["password_hash"].startswith("$2b$")
+        assert u.get("trial_started_at")
+        assert u.get("trial_ends_at")
+        end = datetime.fromisoformat(u["trial_ends_at"])
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        delta = end - datetime.now(timezone.utc)
+        assert timedelta(days=6, hours=23) <= delta <= timedelta(days=7, minutes=5)
+    finally:
+        _cleanup_email(email)
+

@@ -1,0 +1,24 @@
+{
+  "summary": "iteration_10 backend regression + new billing-migration tests PASS. 106/106 pytest (90 previous, updated for new plan-aware gate + 16 new for /billing/plans, /billing/subscription, plan-aware checkout, and build-limit gate). Verified: /billing/plans returns 4 plans (solo/team/agency real prices + white_label contact_only=true); /billing/subscription is 401 unauth, returns trial-source solo for fresh registered user with ~7d trial_ends_at, returns expired for past-trial user, returns stripe-source team for active team billing row; checkout dispatches by plan_key (solo/team/agency lookup_keys recorded on payment_transactions), rejects white_label + bogus with 400, defaults to solo when omitted; build-limit gate returns build_limit_reached with correct plan_key/limit at solo(8) and team(32), returns trial_expired for past-trial users, and passes under limit.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Frontend follow-up (out of scope this iteration): update BillingCard.jsx / add /pricing to consume {plans:[...]} and /billing/subscription's new shape (plan_key, source, plan_name, active_builds_limit, trial_ends_at). Legacy /billing/status still exists but now reports plan='none' rather than 'free' for unsubscribed users — any FE code branching on 'free' needs updating."
+  ],
+  "critical_code_review_comments": [
+    "server.py checkout metadata still hardcodes lookup_key=STRIPE_PRO_LOOKUP_KEY (line 1448) — a stale legacy env var. Should be plan['lookup_key'] so Stripe session metadata reflects the actual plan chosen. Not test-visible because the DB record captures plan['lookup_key'] correctly (line 1470), but the Stripe-side metadata is wrong for team/agency and would confuse webhook debugging.",
+    "PLANS 'white_label' has contact_only=true but no 'contact_only' key on the other three plans — the endpoint coerces to bool(p.get('contact_only')) which is fine, but making the field explicit on all four would be cleaner for FE typing.",
+    "server.py is now ~1995 lines — routers should be split (auth/, billing/, projects/, digest/) as previously flagged.",
+    "FREE_TIER_PROJECT_LIMIT env var (default 3) is still read at import time but no longer used for gating; only surfaced via legacy /billing/status. Consider removing or clearly documenting as legacy.",
+    "_seed_user_and_session helper in tests now injects trial_ends_at 7d out (mirrors register). This keeps all pre-existing tests behaving as before the plan migration."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (106/106)", "frontend": "not tested (backend-only request)"},
+  "test_credentials": "Ephemeral users seeded via _seed_user_and_session with trial_ends_at=+7d; new users via POST /api/auth/register (email TEST_reg_<hex>@example.com). All cleaned up post-test.",
+  "seed_data_creation": "Per-test: users, billing rows (team plan), payment_transactions, projects (7/8/32 counts for gate tests), and github_connections with fake Fernet-encrypted token.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Billing migration backend contracts are verified green. Next testing session will likely target the frontend billing/pricing rework — expect a /pricing page consuming GET /api/billing/plans, and BillingCard replaced with a subscription card consuming GET /api/billing/subscription (with plan_key/source/plan_name/active_builds_limit/trial_ends_at). Existing FE frontend tests calling /billing/status still work but now see plan='none' instead of 'free' for unsubscribed users.",
+  "rca of the issue": "N/A — feature verification only."
+}
