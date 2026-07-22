@@ -1141,9 +1141,16 @@ async def _run_scan(project_id: str, user_id: str, scan_id: str) -> None:
             {"project_id": project_id}, {"_id": 0},
         )]
         done_texts = {s["text"].strip().lower() for s in old_steps if s.get("done")}
+        completed_at_map = {
+            s["text"].strip().lower(): s.get("completed_at")
+            for s in old_steps
+            if s.get("done") and s.get("completed_at")
+        }
         await db.next_steps.delete_many({"project_id": project_id})
         new_docs = []
         for i, step in enumerate(ai.get("next_steps", []), start=1):
+            key = step["text"].strip().lower()
+            is_done = key in done_texts
             new_docs.append({
                 "id": f"step_{uuid.uuid4().hex[:10]}",
                 "user_id": user_id,
@@ -1151,7 +1158,8 @@ async def _run_scan(project_id: str, user_id: str, scan_id: str) -> None:
                 "text": step["text"],
                 "weight": step["weight"],
                 "order": step.get("order", i),
-                "done": step["text"].strip().lower() in done_texts,
+                "done": is_done,
+                "completed_at": completed_at_map.get(key) if is_done else None,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
         if new_docs:
@@ -1220,12 +1228,33 @@ async def toggle_next_step(step_id: str, payload: ToggleNextStepIn, user: dict =
     step = await db.next_steps.find_one({"id": step_id, "user_id": user["user_id"]}, {"_id": 0})
     if not step:
         raise HTTPException(status_code=404, detail="Next step not found")
-    await db.next_steps.update_one(
-        {"id": step_id},
-        {"$set": {"done": bool(payload.done), "updated_at": datetime.now(timezone.utc).isoformat()}},
-    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update = {"done": bool(payload.done), "updated_at": now_iso}
+    # Stamp completed_at only on the first done→true transition and when re-completing;
+    # unset when marked back to not-done so the weekly-activity count is truthful.
+    if payload.done and not step.get("completed_at"):
+        update["completed_at"] = now_iso
+    if not payload.done and step.get("completed_at"):
+        update["completed_at"] = None
+    await db.next_steps.update_one({"id": step_id}, {"$set": update})
     proj = await db.projects.find_one({"id": step["project_id"]}, {"_id": 0})
     return await _project_to_out(proj)
+
+
+@api.get("/activity/weekly")
+async def activity_weekly(user: dict = Depends(get_current_user)):
+    """Return this user's shipping activity in the last 7 days.
+
+    A "shipped" step is any next-step marked done whose `completed_at` falls within
+    the last 7 days. Threshold (3) drives the Dashboard "shipped this week" badge.
+    """
+    since_iso = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    count = await db.next_steps.count_documents({
+        "user_id": user["user_id"],
+        "done": True,
+        "completed_at": {"$gte": since_iso},
+    })
+    return {"shipped_this_week": int(count), "threshold": 3, "window_days": 7}
 
 
 
@@ -1929,14 +1958,21 @@ async def _job_rescan_stale_projects() -> None:
                 "model": SCORING_MODEL,
                 "scored_at": now_iso,
             })
-            # Preserve done-flags for identically-worded steps (F3).
+            # Preserve done-flags and completed_at for identically-worded steps (F3).
             old_steps = [s async for s in db.next_steps.find(
                 {"project_id": proj["id"]}, {"_id": 0},
             )]
             done_texts = {s["text"].strip().lower() for s in old_steps if s.get("done")}
+            completed_at_map = {
+                s["text"].strip().lower(): s.get("completed_at")
+                for s in old_steps
+                if s.get("done") and s.get("completed_at")
+            }
             await db.next_steps.delete_many({"project_id": proj["id"]})
             new_docs = []
             for i, step in enumerate(ai.get("next_steps", []), start=1):
+                key = step["text"].strip().lower()
+                is_done = key in done_texts
                 new_docs.append({
                     "id": f"step_{uuid.uuid4().hex[:10]}",
                     "user_id": proj["user_id"],
@@ -1944,7 +1980,8 @@ async def _job_rescan_stale_projects() -> None:
                     "text": step["text"],
                     "weight": step["weight"],
                     "order": step.get("order", i),
-                    "done": step["text"].strip().lower() in done_texts,
+                    "done": is_done,
+                    "completed_at": completed_at_map.get(key) if is_done else None,
                     "created_at": now_iso,
                 })
             if new_docs:

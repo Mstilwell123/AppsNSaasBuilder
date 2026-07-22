@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import ProjectCard from "@/components/ProjectCard";
 import TopMovers from "@/components/TopMovers";
+import ShippedBadge from "@/components/ShippedBadge";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -15,6 +16,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
   const [movers, setMovers] = useState([]);
+  const [activity, setActivity] = useState(null);
   const [connected, setConnected] = useState(null); // null=loading, true/false
   const [loading, setLoading] = useState(true);
 
@@ -24,12 +26,18 @@ export default function Dashboard() {
         const [status, list] = await Promise.all([api.githubStatus(), api.listProjects()]);
         setConnected(status.connected);
         setProjects(list);
-        // Top movers is best-effort; failure shouldn't kill the dashboard.
+        // Top movers + activity are best-effort; failures shouldn't kill the dashboard.
         try {
           const m = await api.topMovers(3);
           setMovers(m);
         } catch {
           setMovers([]);
+        }
+        try {
+          const a = await api.activityWeekly();
+          setActivity(a);
+        } catch {
+          setActivity(null);
         }
       } catch (err) {
         toast.error(err?.data?.detail || "Failed to load dashboard");
@@ -65,6 +73,7 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-4 shrink-0">
+          <ShippedBadge activity={activity} />
           {projects.length > 0 && (
             <div className="text-right border border-border rounded-sm px-4 py-3 bg-card">
               <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">

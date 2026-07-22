@@ -63,6 +63,7 @@ export const api = {
     request(`/next-steps/${id}`, { method: "PATCH", body: { done } }),
   topMovers: (limit = 3) => request(`/movers?limit=${limit}`),
   scoreHistory: (id, limit = 20) => request(`/projects/${id}/scores?limit=${limit}`),
+  activityWeekly: () => request("/activity/weekly"),
   // Preferences
   getPreferences: () => request("/preferences"),
   updatePreferences: (weekly_digest_enabled) =>

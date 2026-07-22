@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 12 full-stack verification of the Dashboard 'Shipped this week' badge feature PASSED. Backend: 7/7 new pytest cases green in /app/backend/tests/test_activity_weekly.py — GET /api/activity/weekly returns exact shape {shipped_this_week:int, threshold:3, window_days:7}; 401 without auth; freshly-registered user reports 0; PATCH /api/next-steps/{id} with {done:true} stamps completed_at and {done:false} clears it (weekly count updates accordingly); steps completed >7d ago are excluded from the count; rescan-preservation logic (mirroring server._run_scan L1140-1166 and _job_rescan_stale_projects L1961) keeps completed_at bit-for-bit intact for identically-worded steps and correctly leaves brand-new step docs with completed_at=null. Frontend: 4/4 Playwright cases green — (A) with 3 recently-completed seeded steps the header renders dashboard-shipped-badge + dashboard-shipped-count reading '3 steps · keep going'; (B) fresh user with 0 completions => badge NOT rendered; (C) user with 2 completions (below threshold) => badge NOT rendered; (D) forced 500 on /api/activity/weekly via page.route interception — dashboard still fully renders (add-repo/connect-cta/empty/grid/loading testid present) and badge stays hidden, confirming best-effort fetch behavior.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_activity_weekly.py",
+    "/app/test_reports/pytest/it12.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now 2060 lines — carry-over from iter_11: split into routers (auth/billing/projects/next-steps/activity/digest). Adding /api/activity/weekly further increases the case for this.",
+    "completed_at is stored as ISO string; the $gte comparison in /api/activity/weekly is a lexicographic string compare. Works because all writes use timezone-aware isoformat with the same offset ('+00:00'). If a future write path drops tzinfo or uses 'Z' suffix, the compare could silently mis-order — consider storing as native BSON Date and comparing with real datetimes.",
+    "The completed_at_map preservation logic is duplicated verbatim between _run_scan (L1140-1166) and _job_rescan_stale_projects (L1961-1988). Extract into a helper (e.g. _rebuild_next_steps_preserving_completion) to avoid drift.",
+    "ShippedBadge count text hard-codes 'keep going' — no i18n or celebratory tier once user hits e.g. 10+ shipped. Fine for now; flag for post-MVP polish.",
+    "Dashboard fetches activityWeekly() sequentially after topMovers() rather than in Promise.all — minor latency cost (~1 RTT). Consider parallelizing since both are best-effort."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_activity_weekly.py"
+  ],
+  "success_rate": {"backend": "100% (7/7 new)", "frontend": "100% (4/4 cases A/B/C/D)"},
+  "test_credentials": "Fresh users per test via POST /api/auth/register with email TEST_it12_..._<hex>@example.com / password 'correct-horse-battery-staple'. All created users cleaned up post-test (users, user_sessions, next_steps, projects). No pre-seeded credential needed.",
+  "seed_data_creation": "For frontend cases A and C, next_steps documents were inserted directly into Mongo (test_database.next_steps) with user_id from the registered user, done=true and completed_at=<ISO now>. For the backend rescan-preservation test, a step was inserted with completed_at 2 days ago and the preservation code path was replicated inline to verify equal-text steps retain the timestamp.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration_12 (shipped-this-week badge) fully verified. Backend endpoint /api/activity/weekly is stable and cheap (single count_documents). If a future iteration changes the completed_at storage type or adds a real-time refresh of the badge after toggleNextStep (currently the Dashboard only fetches activity on mount — the badge does NOT auto-update if user marks a step done from the ProjectDetail page and returns without a full reload), add tests for that. Rescan preservation was only verified via inline logic replication; if you want an end-to-end scan test you'll need to mock GitHub API + LLM.",
+  "rca of the issue": "N/A — feature verification only."
+}
