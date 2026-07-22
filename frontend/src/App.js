@@ -11,6 +11,8 @@ import ResetPassword from "@/pages/ResetPassword";
 import Connect from "@/pages/Connect";
 import RepoPicker from "@/pages/RepoPicker";
 import ProjectDetail from "@/pages/ProjectDetail";
+import PaymentSuccess from "@/pages/PaymentSuccess";
+import PaymentCancel from "@/pages/PaymentCancel";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
@@ -25,6 +27,8 @@ function AppRouter() {
       <Route path="/" element={<Login />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/payment/success" element={<PaymentSuccess />} />
+      <Route path="/payment/cancel" element={<PaymentCancel />} />
       <Route
         path="/dashboard"
         element={

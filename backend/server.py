@@ -6,7 +6,7 @@ Auth model (hybrid, per user choice C):
   via POST /api/auth/change-password.
 """
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -26,6 +26,7 @@ import asyncio
 import bcrypt
 import httpx
 import resend
+import stripe
 from cryptography.fernet import Fernet, InvalidToken
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -52,6 +53,11 @@ _fernet = Fernet(TOKEN_ENCRYPTION_KEY.encode()) if TOKEN_ENCRYPTION_KEY else Non
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 SCORING_MODEL = os.environ.get("SCORING_MODEL", "claude-haiku-4-5-20251001")
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRO_LOOKUP_KEY = os.environ.get("STRIPE_PRO_LOOKUP_KEY", "pro_monthly")
+FREE_TIER_PROJECT_LIMIT = int(os.environ.get("FREE_TIER_PROJECT_LIMIT", "3"))
 
 EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 SESSION_TTL_DAYS = 7
@@ -873,6 +879,20 @@ async def track_project(payload: TrackRepoIn, user: dict = Depends(get_current_u
     if existing:
         return await _project_to_out(existing)
 
+    # Free-tier project cap.
+    plan = await _get_plan(user["user_id"])
+    if plan == "free":
+        tracked = await db.projects.count_documents({"user_id": user["user_id"]})
+        if tracked >= FREE_TIER_PROJECT_LIMIT:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "code": "free_tier_limit_reached",
+                    "message": f"Free plan is limited to {FREE_TIER_PROJECT_LIMIT} tracked repos. Upgrade to Pro for unlimited.",
+                    "limit": FREE_TIER_PROJECT_LIMIT,
+                },
+            )
+
     token = await _get_github_token(user["user_id"])
     async with httpx.AsyncClient(timeout=20.0) as client:
         # Look up repo by id, then hydrate signals.
@@ -1032,6 +1052,238 @@ async def toggle_next_step(step_id: str, payload: ToggleNextStepIn, user: dict =
     )
     proj = await db.projects.find_one({"id": step["project_id"]}, {"_id": 0})
     return await _project_to_out(proj)
+
+
+
+
+# ---------- Billing (Stripe subscription) ----------
+class BillingCheckoutIn(BaseModel):
+    origin_url: str
+
+
+def _plan_for(billing: Optional[dict]) -> str:
+    if not billing:
+        return "free"
+    status = (billing.get("subscription_status") or "").lower()
+    if status in {"active", "trialing"}:
+        return "pro"
+    return "free"
+
+
+async def _get_plan(user_id: str) -> str:
+    b = await db.billing.find_one({"user_id": user_id}, {"_id": 0})
+    return _plan_for(b)
+
+
+@api.get("/billing/status")
+async def billing_status(user: dict = Depends(get_current_user)):
+    b = await db.billing.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    plan = _plan_for(b)
+    tracked = await db.projects.count_documents({"user_id": user["user_id"]})
+    return {
+        "plan": plan,
+        "subscription_status": (b or {}).get("subscription_status"),
+        "current_period_end": (b or {}).get("current_period_end"),
+        "cancel_at_period_end": bool((b or {}).get("cancel_at_period_end")),
+        "customer_id": (b or {}).get("customer_id"),
+        "subscription_id": (b or {}).get("subscription_id"),
+        "tracked_projects": tracked,
+        "free_tier_limit": FREE_TIER_PROJECT_LIMIT,
+    }
+
+
+async def _get_or_create_customer(user: dict) -> str:
+    b = await db.billing.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if b and b.get("customer_id"):
+        return b["customer_id"]
+    customer = await asyncio.to_thread(
+        stripe.Customer.create,
+        email=user["email"],
+        name=user.get("name") or user["email"],
+        metadata={"user_id": user["user_id"]},
+    )
+    await db.billing.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"user_id": user["user_id"], "customer_id": customer.id,
+                  "email": user["email"],
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return customer.id
+
+
+@api.post("/billing/checkout")
+async def billing_checkout(payload: BillingCheckoutIn, user: dict = Depends(get_current_user)):
+    prices = await asyncio.to_thread(
+        lambda: stripe.Price.list(lookup_keys=[STRIPE_PRO_LOOKUP_KEY], active=True, limit=1).data,
+    )
+    if not prices:
+        raise HTTPException(status_code=500, detail="Pro price not configured")
+    price = prices[0]
+
+    customer_id = await _get_or_create_customer(user)
+
+    origin = payload.origin_url.rstrip("/")
+    kwargs = dict(
+        mode="subscription",
+        customer=customer_id,
+        line_items=[{"price": price.id, "quantity": 1}],
+        success_url=f"{origin}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{origin}/payment/cancel",
+        metadata={"user_id": user["user_id"], "lookup_key": STRIPE_PRO_LOOKUP_KEY},
+        allow_promotion_codes=True,
+    )
+    try:
+        session = await asyncio.to_thread(
+            lambda: stripe.checkout.Session.create(**kwargs, managed_payments={"enabled": True}),
+        )
+    except stripe.error.InvalidRequestError as e:
+        msg = (getattr(e, "user_message", "") or "").lower()
+        if "managed payments" in msg or "ineligible" in msg:
+            session = await asyncio.to_thread(
+                lambda: stripe.checkout.Session.create(
+                    **kwargs, automatic_tax={"enabled": True}, billing_address_collection="required",
+                ),
+            )
+        else:
+            raise HTTPException(status_code=502, detail=str(e))
+
+    await db.payment_transactions.insert_one({
+        "session_id": session.id,
+        "user_id": user["user_id"],
+        "customer_id": customer_id,
+        "lookup_key": STRIPE_PRO_LOOKUP_KEY,
+        "amount": (price.unit_amount or 0),
+        "currency": price.currency,
+        "status": "initiated",
+        "payment_status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"checkout_url": session.url, "session_id": session.id}
+
+
+@api.get("/payments/status/{session_id}")
+async def payments_status(session_id: str):
+    record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if record.get("payment_status") != "paid":
+        try:
+            s = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
+            if s.payment_status == "paid" or s.status == "complete":
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+                    {"$set": {
+                        "status": "completed",
+                        "payment_status": "paid",
+                        "subscription_id": s.subscription,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stripe status poll failed: %s", exc)
+    return {
+        "session_id": record["session_id"],
+        "status": record["status"],
+        "payment_status": record["payment_status"],
+    }
+
+
+@api.post("/billing/portal")
+async def billing_portal(payload: BillingCheckoutIn, user: dict = Depends(get_current_user)):
+    b = await db.billing.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not b or not b.get("customer_id"):
+        raise HTTPException(status_code=400, detail="No billing profile yet")
+    origin = payload.origin_url.rstrip("/")
+    portal = await asyncio.to_thread(
+        stripe.billing_portal.Session.create,
+        customer=b["customer_id"],
+        return_url=f"{origin}/settings",
+    )
+    return {"url": portal.url}
+
+
+async def _apply_subscription_state(customer_id: str, subscription: dict) -> None:
+    sub_id = subscription.get("id")
+    status = subscription.get("status")
+    cancel_at_period_end = bool(subscription.get("cancel_at_period_end"))
+    period_end = subscription.get("current_period_end")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    period_end_iso = None
+    if period_end:
+        period_end_iso = datetime.fromtimestamp(int(period_end), tz=timezone.utc).isoformat()
+    await db.billing.update_one(
+        {"customer_id": customer_id},
+        {"$set": {
+            "customer_id": customer_id,
+            "subscription_id": sub_id,
+            "subscription_status": status,
+            "cancel_at_period_end": cancel_at_period_end,
+            "current_period_end": period_end_iso,
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+
+
+@api.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    obj = event["data"]["object"]
+    t = event["type"]
+
+    if t == "checkout.session.completed":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"], "payment_status": {"$ne": "paid"}},
+            {"$set": {
+                "status": "completed",
+                "payment_status": obj.get("payment_status", "paid"),
+                "subscription_id": obj.get("subscription"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        sub_id = obj.get("subscription")
+        customer_id = obj.get("customer")
+        if sub_id and customer_id:
+            sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub_id)
+            await _apply_subscription_state(customer_id, sub.to_dict())
+    elif t == "checkout.session.async_payment_succeeded":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"]},
+            {"$set": {"payment_status": "paid",
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    elif t == "checkout.session.async_payment_failed":
+        await db.payment_transactions.update_one(
+            {"session_id": obj["id"]},
+            {"$set": {"status": "failed", "payment_status": "failed",
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    elif t in {"customer.subscription.created", "customer.subscription.updated"}:
+        await _apply_subscription_state(obj.get("customer"), obj)
+    elif t == "customer.subscription.deleted":
+        await db.billing.update_one(
+            {"customer_id": obj.get("customer")},
+            {"$set": {
+                "subscription_status": "canceled",
+                "cancel_at_period_end": False,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+    elif t == "charge.refunded":
+        await db.payment_transactions.update_one(
+            {"stripe_payment_intent_id": obj.get("payment_intent")},
+            {"$set": {"status": "refunded", "payment_status": "refunded",
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return {"status": "ok"}
 
 
 

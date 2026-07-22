@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Github, Star, GitBranch, ArrowRight, Search } from "lucide-react";
+import { Github, Star, GitBranch, ArrowRight, Search, Sparkles } from "lucide-react";
 
 export default function RepoPicker() {
   const navigate = useNavigate();
@@ -60,15 +60,31 @@ export default function RepoPicker() {
     }
     setSaving(true);
     let ok = 0;
+    let hitLimit = false;
     for (const id of selection) {
       try {
         await api.trackProject(id);
         ok += 1;
       } catch (err) {
-        toast.error(err?.data?.detail || `Failed to track repo`);
+        const code = err?.data?.detail?.code;
+        if (err?.status === 402 && code === "free_tier_limit_reached") {
+          hitLimit = true;
+          break;
+        }
+        toast.error(err?.data?.detail?.message || err?.data?.detail || `Failed to track repo`);
       }
     }
     setSaving(false);
+    if (hitLimit) {
+      toast.error("Free plan limit reached. Upgrade to Pro for unlimited repos.", {
+        action: {
+          label: "Upgrade",
+          onClick: () => navigate("/settings"),
+        },
+      });
+      if (ok > 0) navigate("/dashboard", { replace: true });
+      return;
+    }
     if (ok > 0) {
       toast.success(`Tracking ${ok} repo${ok > 1 ? "s" : ""}. Run a scan next.`);
       navigate("/dashboard", { replace: true });

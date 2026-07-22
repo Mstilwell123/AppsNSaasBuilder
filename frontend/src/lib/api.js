@@ -57,4 +57,11 @@ export const api = {
   scanProject: (id) => request(`/projects/${id}/scan`, { method: "POST" }),
   toggleNextStep: (id, done) =>
     request(`/next-steps/${id}`, { method: "PATCH", body: { done } }),
+  // Billing
+  billingStatus: () => request("/billing/status"),
+  billingCheckout: (origin_url) =>
+    request("/billing/checkout", { method: "POST", body: { origin_url } }),
+  billingPortal: (origin_url) =>
+    request("/billing/portal", { method: "POST", body: { origin_url } }),
+  paymentStatus: (session_id) => request(`/payments/status/${session_id}`),
 };

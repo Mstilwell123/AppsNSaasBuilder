@@ -598,3 +598,168 @@ def test_delete_project_cascades(seeded_with_cleanup):
     assert db.next_steps.count_documents({"project_id": pid}) == 0
     assert db.scores.count_documents({"project_id": pid}) == 0
     assert db.scans.count_documents({"project_id": pid}) == 0
+
+# ================================================================
+# NEW — Billing / Stripe (iteration_6)
+# ================================================================
+FREE_TIER_LIMIT = 3
+
+
+def _cleanup_billing(user_id):
+    db.billing.delete_many({"user_id": user_id})
+    db.payment_transactions.delete_many({"user_id": user_id})
+
+
+@pytest.fixture
+def billing_seeded(seeded):
+    uid, token, email = seeded
+    yield uid, token, email
+    _cleanup_billing(uid)
+    _cleanup_project_data(uid)
+
+
+def test_billing_status_unauth():
+    assert requests.get(f"{API}/billing/status").status_code == 401
+
+
+def test_billing_status_fresh_user(billing_seeded):
+    _, token, _ = billing_seeded
+    r = requests.get(f"{API}/billing/status", headers=auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan"] == "free"
+    assert body["subscription_status"] is None
+    assert body["cancel_at_period_end"] is False
+    assert body["customer_id"] is None
+    assert body["subscription_id"] is None
+    assert body["tracked_projects"] == 0
+    assert body["free_tier_limit"] == FREE_TIER_LIMIT
+
+
+def test_billing_checkout_creates_session_and_records(billing_seeded):
+    uid, token, _ = billing_seeded
+    r = requests.post(f"{API}/billing/checkout", headers=auth(token),
+                      json={"origin_url": "https://example.com"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "checkout.stripe.com" in data["checkout_url"]
+    sid = data["session_id"]
+    assert sid.startswith("cs_test_")
+    # payment_transactions row
+    tx = db.payment_transactions.find_one({"session_id": sid})
+    assert tx is not None
+    assert tx["status"] == "initiated"
+    assert tx["payment_status"] == "pending"
+    assert tx["user_id"] == uid
+    # billing row upserted with customer_id
+    b = db.billing.find_one({"user_id": uid})
+    assert b is not None
+    assert b.get("customer_id")
+
+
+def test_billing_checkout_reuses_customer(billing_seeded):
+    uid, token, _ = billing_seeded
+    r1 = requests.post(f"{API}/billing/checkout", headers=auth(token),
+                       json={"origin_url": "https://example.com"})
+    assert r1.status_code == 200
+    b1 = db.billing.find_one({"user_id": uid})
+    cid1 = b1["customer_id"]
+    r2 = requests.post(f"{API}/billing/checkout", headers=auth(token),
+                       json={"origin_url": "https://example.com"})
+    assert r2.status_code == 200
+    # not duplicated
+    cnt = db.billing.count_documents({"user_id": uid})
+    assert cnt == 1
+    b2 = db.billing.find_one({"user_id": uid})
+    assert b2["customer_id"] == cid1
+
+
+def test_payments_status_unauthenticated_returns_pending(billing_seeded):
+    _, token, _ = billing_seeded
+    r = requests.post(f"{API}/billing/checkout", headers=auth(token),
+                     json={"origin_url": "https://example.com"})
+    sid = r.json()["session_id"]
+    # NO auth header
+    r2 = requests.get(f"{API}/payments/status/{sid}")
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert body["session_id"] == sid
+    # Playbook allows graceful pass-through; either initiated/pending or upgraded state
+    assert body["payment_status"] in ("pending", "paid", "unpaid", "no_payment_required")
+    assert body["status"] in ("initiated", "completed", "complete")
+
+
+def test_payments_status_unknown_session_404():
+    r = requests.get(f"{API}/payments/status/cs_test_definitely_missing_xyz")
+    assert r.status_code == 404
+
+
+def test_billing_portal_without_profile_400(billing_seeded):
+    _, token, _ = billing_seeded
+    r = requests.post(f"{API}/billing/portal", headers=auth(token),
+                      json={"origin_url": "https://example.com"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "No billing profile yet"
+
+
+def test_billing_portal_after_checkout_returns_url(billing_seeded):
+    _, token, _ = billing_seeded
+    requests.post(f"{API}/billing/checkout", headers=auth(token),
+                  json={"origin_url": "https://example.com"})
+    r = requests.post(f"{API}/billing/portal", headers=auth(token),
+                     json={"origin_url": "https://example.com"})
+    assert r.status_code == 200, r.text
+    assert "billing.stripe.com" in r.json()["url"]
+
+
+def test_stripe_webhook_bad_signature_400():
+    r = requests.post(f"{API}/stripe/webhook",
+                      headers={"stripe-signature": "t=1,v1=garbage"},
+                      data=b'{"id":"evt_test","type":"foo"}')
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Invalid signature"
+
+
+def test_stripe_webhook_missing_signature_400():
+    r = requests.post(f"{API}/stripe/webhook", data=b'{"id":"evt_test"}')
+    assert r.status_code == 400
+
+
+# ---------- Free-tier gate ----------
+def test_free_tier_gate_blocks_at_limit(billing_seeded):
+    uid, token, _ = billing_seeded
+    _seed_github_connection(uid)
+    # seed 3 projects (at limit)
+    for i in range(FREE_TIER_LIMIT):
+        _seed_project(uid, name=f"p{i}", full_name=f"gh/p{i}")
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 987654})
+    assert r.status_code == 402, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "free_tier_limit_reached"
+    assert detail["limit"] == FREE_TIER_LIMIT
+    assert isinstance(detail["message"], str) and len(detail["message"]) > 0
+
+
+def test_pro_tier_bypasses_free_gate(billing_seeded):
+    uid, token, _ = billing_seeded
+    _seed_github_connection(uid)
+    for i in range(FREE_TIER_LIMIT):
+        _seed_project(uid, name=f"p{i}", full_name=f"gh/p{i}")
+    # upsert active pro billing row
+    db.billing.update_one(
+        {"user_id": uid},
+        {"$set": {
+            "user_id": uid,
+            "customer_id": "cus_test_manual",
+            "subscription_status": "active",
+            "cancel_at_period_end": False,
+        }},
+        upsert=True,
+    )
+    r = requests.post(f"{API}/projects", headers=auth(token),
+                      json={"github_repo_id": 987654})
+    # Gate should be bypassed → not 402. Real GitHub will 404/502 the fake token.
+    assert r.status_code != 402
+    assert r.status_code in (404, 502)
+

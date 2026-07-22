@@ -1,0 +1,23 @@
+{
+  "summary": "P5 Stripe billing (iteration_6) fully verified. Backend: 51/51 pytest tests PASS in 17.94s (39 prior + 12 new billing/free-tier). Frontend: 9/9 UI flows PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Billing endpoints correctly exclude Mongo _id via projection {_id:0}.",
+    "Free-tier gate returns detail as dict {code, message, limit} — machine-readable shape matches frontend RepoPicker handler.",
+    "Webhook signature verification is enforced: bad + missing 'stripe-signature' both return 400 'Invalid signature'.",
+    "billing_checkout is idempotent per user: reuses customer_id via _get_or_create_customer with upsert keyed by user_id (no duplicate billing rows on repeat call — verified).",
+    "GET /api/payments/status/{sid} is intentionally unauthenticated to support post-checkout polling — verified 200 without auth, 404 for unknown sid.",
+    "PaymentSuccess polling has MAX_POLLS=12 * 2s = 24s — reasonable. Without session_id it correctly transitions to error state (still shows polling card briefly, which is acceptable per playbook)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (51/51)", "frontend": "100% (9/9)"},
+  "test_credentials": "Ephemeral direct-Mongo seeded users + user_sessions + billing + payment_transactions (per /app/auth_testing.md). Fully wiped after run.",
+  "seed_data_creation": "Tests seed: free user, pro user (billing.subscription_status='active'), paid payment_transactions row (payment_status='paid'), github_connections with Fernet-encrypted fake token, 3 projects for free-tier gate. Cleanup runs in fixture teardown + explicit mongo delete at end of playwright script.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend billing tests live in /app/backend/tests/backend_test.py under '# Billing / Stripe (iteration_6)' section (lines 601+). Uses real Stripe test-mode API (STRIPE_MODE='test', lookup_key='pro_monthly'). checkout returns real cs_test_ session IDs, portal returns real billing.stripe.com URL. Do NOT complete real checkout in tests. Frontend testids: settings-billing-card, billing-plan-heading, billing-upgrade-button, billing-manage-button, payment-success-card, payment-success-polling, payment-success-timeout, payment-cancel-card, payment-cancel-return.",
+  "rca of the issue": "N/A — no defects found. All acceptance criteria from the review request are satisfied."
+}

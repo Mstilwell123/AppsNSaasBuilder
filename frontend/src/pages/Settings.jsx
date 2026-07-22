@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import BillingCard from "@/components/BillingCard";
 import { KeyRound, User } from "lucide-react";
 
 const MIN_LEN = 8;
@@ -102,6 +103,9 @@ export default function Settings() {
             </div>
           </div>
         </Card>
+
+        {/* Billing */}
+        <BillingCard />
 
         {/* Change / Set password */}
         <Card
