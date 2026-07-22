@@ -136,7 +136,7 @@ export default function BillingCard() {
                 className="h-10 rounded-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors duration-200 px-4"
               >
                 <Sparkles className="h-3.5 w-3.5 mr-2" />
-                {isTrial ? "See plans" : "Choose your plan"}
+                {"Choose your plan"}
               </Button>
             )}
             <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">

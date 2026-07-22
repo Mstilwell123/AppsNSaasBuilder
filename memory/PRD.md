@@ -49,43 +49,55 @@ publicly-exposed admin password.
   improving scans).
 - Score history: `GET /api/projects/{id}/scores` + SVG line chart.
 - Top Movers widget: `GET /api/movers`.
-- **Billing v2 (this session)** — plan catalog + trials:
+- Billing v2 backend — plan catalog + trials:
   - PLANS constant: `solo` ($29/8 builds), `team` ($49/32), `agency` ($149/200),
     `white_label` (contact_only).
   - Stripe catalog: `appnsaas_{solo,team,agency}_monthly` lookup_keys.
-    `pro_monthly` deactivated.
   - `GET /api/billing/plans` — public, powers pricing page.
-  - `GET /api/billing/subscription` — authed, returns
-    `{plan_key, source, plan_name, active_builds_limit, tracked_projects,
-    trial_ends_at, current_period_end, cancel_at_period_end}`.
-  - `POST /api/billing/checkout` now takes `{plan_key}` and dispatches by
-    lookup_key. white_label + unknown → 400.
-  - **7-day auto-trial on Solo** at register (no card required). `trial_started_at`
-    and `trial_ends_at` fields on user doc.
-  - Plan-aware build limit: 402 `code:'build_limit_reached'` (with `limit`,
-    `plan_key`) OR 402 `code:'trial_expired'`.
+  - `GET /api/billing/subscription` — authed, returns `{plan_key, source,
+    plan_name, active_builds_limit, tracked_projects, trial_ends_at,
+    current_period_end, cancel_at_period_end}`.
+  - `POST /api/billing/checkout` takes `{plan_key}`; white_label + unknown → 400.
+  - 7-day auto-trial on Solo at register (no card required).
+  - Plan-aware build limit: 402 `code:'build_limit_reached'` OR `'trial_expired'`.
 - Background jobs (APScheduler in-process): Mon 15:00 UTC weekly digest,
-  03:00 UTC nightly re-scan of projects >24h stale.
+  03:00 UTC nightly re-scan, **04:00 UTC nightly trial-lock (`_job_lock_expired_trials`
+  sets `locked_at` on users past `trial_ends_at` with no active subscription;
+  idempotent, skips active-Stripe users)**.
 - Weekly Progress Digest email + opt-out + preview + send-test endpoints.
-- Testing agent iterations 1–10, all green (last: 106/106 backend).
+- **Billing v2 frontend (this session — 2026-02):**
+  - `/app/frontend/src/lib/billing.jsx` — `BillingProvider`, `useBilling()` hook,
+    `guard()` helper, `daysLeft()` util.
+  - `/pricing` page (public) — 4-card grid with "Popular" badge on Team and
+    "Current" ring/badge on the caller's active plan. Trial banner shows
+    days-left. Expired banner surfaces when locked.
+  - `UpgradeModal` — triggered by 402 from `POST /api/projects` in RepoPicker,
+    lists 2-4 upgrade targets with per-plan Stripe checkout CTA.
+  - `BillingCard` rewritten for `/billing/subscription` shape: trial days-left
+    badge, per-source CTAs (Choose your plan / Manage subscription + Change plan).
+  - `LockedGate` in App.js — trial-expired users are redirected from
+    /dashboard, /settings, /repos, /projects/:id, /connect to /pricing.
+    Reachable while locked: /pricing, /payment/success, /payment/cancel.
+- Testing agent iterations 1–11, all green (last: 117/117 backend, 100% of
+  exercised frontend billing flows).
 
 ## Backlog / next
-- **Frontend billing v2 (highest priority — pairs with this backend work):**
-  1. New public `/pricing` page consuming `GET /api/billing/plans` with 4 cards
-     (Solo/Team/Agency + White Label contact-sales).
-  2. `BillingProvider` context + `useBilling()` hook + `guard()` helper.
-  3. Rewrite `BillingCard.jsx` to consume `/billing/subscription` shape
-     (plan_key, source, trial_ends_at). Show trial days remaining + upgrade CTA.
-  4. `UpgradeModal` when `POST /api/projects` returns 402 (both
-     `build_limit_reached` and `trial_expired` codes).
-  5. `/billing/success` polling rewrite — call `/api/billing/sync` after payment.
-- **Nightly cron: trial lock** — mark trials past `trial_ends_at` without a
-  billing row so users are prompted to upgrade.
-- **Router split (deferred)** — server.py is now 1,995 lines. Extract
-  auth/projects/billing/digest routers in a dedicated session.
+- **P1** — "Trial ending" banner at top of the app when `trial_ends_at` within
+  3 days, with "Choose your plan" button (currently only surfaced on Settings
+  and /pricing).
+- **BillingProvider refresh semantics** — expose `refresh()` from `useBilling`
+  and call it on portal/checkout return; currently reruns only on `user` change.
+- **checkout metadata bug** (carry-over from iter_10 review) — Stripe session
+  metadata still passes `STRIPE_PRO_LOOKUP_KEY`; should use `plan['lookup_key']`.
+- **Router split (P2)** — server.py is now ~2,023 lines. Extract
+  auth/projects/billing/digest routers.
+- `_job_lock_expired_trials` locked_at filter: switch `{$in:[None,""]}` to
+  explicit `$or:[{$exists:false},{null}]` for intent clarity.
+- FastAPI `@app.on_event('startup'/'shutdown')` deprecated — migrate to lifespan.
 - Stale-scan reaper (mark scans still `running` after 5 min as error).
 - Wrap `resend.Emails.send` in `asyncio.wait_for(..., timeout=15)`.
 - Remove vestigial `STRIPE_PRO_LOOKUP_KEY` / `FREE_TIER_PROJECT_LIMIT` env vars.
 - Private-repo scope-upgrade flow (deferred per PF-1).
 - Session list + per-device revoke in Settings.
 - Verify a real Resend sending domain (user-side action).
+- `ProjectDetail.jsx` decomposition (>300 lines) — flagged repeatedly by analyzer.
