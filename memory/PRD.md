@@ -36,58 +36,46 @@ publicly-exposed admin password.
   - `lib/auth.jsx` — `AuthProvider` + `useAuth` hook.
 
 ## What's been implemented (2026-02)
-- Emergent Google Auth end-to-end (session exchange, cookie, /me, logout).
-- Local password: set + change flow with all validation branches.
-- Local email + password login (`POST /api/auth/login`), enumeration-safe.
-- **Email/password sign-up** (`POST /api/auth/register`), lowercase-normalized email,
-  duplicate → 409, min-8 pw, immediate session on success. `/register` page + link
-  from `/login`.
-- Forgot password + reset password via Resend (30-min single-use sha256 tokens).
-- Settings page (profile + password + billing + weekly digest) with data-testids.
-- Login page with email/password form + Google as secondary; /forgot-password,
-  /reset-password, /register pages fully wired.
-- CORS scoped to preview host + http://localhost:3000.
-- Brand: "App N SaaS Builder".
-- GitHub OAuth (public_repo), AES-256 Fernet-encrypted tokens, disconnect endpoint.
-- Projects: full CRUD + repo picker + dashboard grid of ProjectCard.
-- AI scoring via Claude Haiku 4.5 (Emergent LLM key), structured JSON.
+- Auth stack: Emergent Google Auth + email/password sign-up + login + change/set
+  password + forgot/reset via Resend (30-min sha256 single-use tokens).
+- **Login rate-limit** (new): 5 failed attempts per email in 15 min → 429.
+  `login_attempts` Mongo collection. Keyed on email only (documented — cluster
+  ingress rotates upstream IPs, and attackers can rotate real IPs anyway; the
+  email is the stable brute-force key).
+- Settings page: profile, password, billing, weekly digest — all with data-testids.
+- Login page + Google fallback + /forgot-password + /reset-password + /register.
+- CORS scoped to preview host + http://localhost:3000. Brand: "App N SaaS Builder".
+- GitHub OAuth (public_repo), AES-256 Fernet-encrypted tokens. Projects CRUD.
+- AI scoring via Claude Haiku 4.5 (Emergent LLM key). Structured JSON.
 - Polish: 12-week sparkline, CI badge, live URL, weighted next-steps checklist
-  with server-side completion %, re-scan preserves done-flags for identical steps.
-- **Score history**: `GET /api/projects/{id}/scores` + SVG line chart on
-  ProjectDetail (renders once ≥2 scans exist).
+  with server-side completion %, done-flag preservation on re-scan.
+- **Async scan** (new): `POST /api/projects/{id}/scan` returns
+  `{id, project_id, status: "running"}` immediately and runs the LLM call as an
+  `asyncio.create_task`. `GET /api/scans/{scan_id}` for polling.
+  Frontend polls every 2s up to 60s; toasts on completion or error.
+- Score history: `GET /api/projects/{id}/scores` + SVG line chart on ProjectDetail.
 - Stripe billing (P5): $30/mo Pro, 3-repo free-tier cap (402 with
-  `code: 'free_tier_limit_reached'`), Managed Payments (tax_mode='full'),
-  Settings → Billing card, /payment/success + /payment/cancel pages.
-- Top Movers widget: `GET /api/movers`, dashboard strip above the grid.
-- **Background jobs (P6, in-process APScheduler)**:
-  - Weekly Progress Digest — Mondays 15:00 UTC.
-  - Nightly re-scan of projects whose latest score is >24h old — 03:00 UTC.
-  - `DISABLE_SCHEDULER=1` env kills both for CI.
-- **Progress Digest email**: `_build_digest_for_user` computes portfolio avg,
-  7-day movers (2+ scores, non-zero delta), shipped-steps-this-week; renders
-  dark-theme HTML + plaintext. Endpoints:
-  - `GET /api/preferences` / `PATCH /api/preferences` — toggle
-    `weekly_digest_enabled` (default true).
-  - `GET /api/digest/preview` — preview + payload.
-  - `POST /api/digest/send-test` — sends the digest to the caller's own email
-    (useful for verifying Resend domain).
-  - Settings → Weekly Digest card with switch + "Send me a preview now" button.
-- **Resend from-domain**: `RESEND_FROM_DOMAIN` env; when set, sender becomes
-  `no-reply@<domain>` (fallback keeps `onboarding@resend.dev` for testing).
-- Testing agent iterations: 1–8, all green (last: 74/74 backend + 100% UI).
+  `code: "free_tier_limit_reached"`). Managed Payments (tax_mode="full").
+- Top Movers widget: `GET /api/movers` + dashboard strip.
+- **Streak badge** (new): `ProjectOut.streak` = consecutive strictly-increasing
+  scans walking back from newest. Flame chip on ProjectCard when streak ≥ 2.
+- Background jobs (APScheduler in-process): Mon 15:00 UTC weekly digest,
+  03:00 UTC nightly re-scan of projects with score >24h old. `DISABLE_SCHEDULER=1`
+  kills both for CI. `RESEND_FROM_DOMAIN` env for verified sender.
+- Weekly Progress Digest email + opt-out + preview + send-test endpoints.
+- Testing agent iterations 1–9, all green (last: 90/90 backend + 100% UI).
 
 ## Backlog / next
+- **P7 (deferred, needs its own session): Split server.py into routers.**
+  Current file is 1,809 lines / 32 routes / heavy cross-domain helpers
+  (`get_current_user`, `db`, models). Safe plan: extract `app/deps.py` +
+  `app/config.py` + `app/models.py` + `app/routers/{auth,projects,billing,digest,github}.py`
+  in a dedicated session. Zero behavior change; mechanical refactor with
+  after-move pytest verification per file. Also on this session: add a stale-scan
+  reaper (mark `scans` rows still `running` after 5 min as `error`) — flagged
+  in iteration_9 review.
 - P2: Private-repo scope-upgrade flow (deferred per PF-1).
 - P2: Password strength meter, reveal-password toggle.
 - P3: Session list + per-device revoke in Settings.
-- **P3: Verify a real Resend sending domain** — user must add DNS records at
-  `resend.com/domains`, then set `RESEND_FROM_DOMAIN=<verified-domain>` in
-  backend/.env and restart. This unlocks digest + reset emails to ALL recipients.
-- P6: Async /scan endpoint (return 202 + scan_id, client polls). Nightly cron
-  already covers stale re-scans.
-- P6: Score-history chart on projects with real cadence data — already shipped,
-  needs projects with 2+ scans to render.
-- P6: Rate-limit + brief lockout on `/api/auth/login` (credential-stuffing).
-- P7 code-review items: split server.py into routers (auth/projects/billing/digest);
-  add dispatcher lock to APScheduler jobs before scaling >1 uvicorn worker; wrap
-  `resend.Emails.send` with `asyncio.wait_for(..., timeout=15)`.
+- P3: Verify a real Resend sending domain (user-side action; docs already in place).
+- P6: `resend.Emails.send` wrapped with `asyncio.wait_for(..., timeout=15)`.
