@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useBilling } from "@/lib/billing";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -15,6 +16,7 @@ export default function PaymentSuccess() {
   const [params] = useSearchParams();
   const sessionId = params.get("session_id") || "";
   const { refresh } = useAuth();
+  const { refresh: refreshBilling, subscription } = useBilling();
   const [state, setState] = useState({ status: "polling", payment_status: "pending" });
   const [attempts, setAttempts] = useState(0);
   const pollingRef = useRef(true);
@@ -36,7 +38,8 @@ export default function PaymentSuccess() {
           pollingRef.current = false;
           if (s.payment_status === "paid") {
             await refresh();
-            toast.success("You're on Pro. Welcome aboard.");
+            await refreshBilling();
+            toast.success("Subscription activated. Welcome aboard.");
           }
           return;
         }
@@ -76,9 +79,9 @@ export default function PaymentSuccess() {
                 <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-1">
                   Success
                 </p>
-                <h1 className="font-display text-3xl tracking-tight">You're on Pro.</h1>
+                <h1 className="font-display text-3xl tracking-tight">You're on {subscription?.plan_name || "your plan"}.</h1>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Unlimited tracked repos, scans on demand. Thanks for going Pro.
+                  Thanks for subscribing. You now have {subscription?.active_builds_limit ?? ""} builds in progress available.
                 </p>
               </div>
             </div>

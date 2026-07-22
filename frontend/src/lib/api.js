@@ -71,8 +71,13 @@ export const api = {
   digestSendTest: () => request("/digest/send-test", { method: "POST" }),
   // Billing
   billingStatus: () => request("/billing/status"),
-  billingCheckout: (origin_url) =>
-    request("/billing/checkout", { method: "POST", body: { origin_url } }),
+  billingPlans: () => request("/billing/plans"),
+  billingSubscription: () => request("/billing/subscription"),
+  billingCheckout: (origin_url, plan_key) =>
+    request("/billing/checkout", {
+      method: "POST",
+      body: { origin_url, plan_key: plan_key || null },
+    }),
   billingPortal: (origin_url) =>
     request("/billing/portal", { method: "POST", body: { origin_url } }),
   paymentStatus: (session_id) => request(`/payments/status/${session_id}`),

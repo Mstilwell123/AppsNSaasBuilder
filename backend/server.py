@@ -1955,6 +1955,32 @@ async def _job_rescan_stale_projects() -> None:
     logger.info("nightly rescan job: scanned %d", scanned)
 
 
+async def _job_lock_expired_trials() -> None:
+    """Nightly 04:00 UTC — mark users whose 7-day trial expired and who have no active
+    Stripe subscription as ``locked``. Idempotent: skips already-locked users."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    logger.info("trial lock job: cutoff=%s", now_iso)
+    locked = 0
+    async for user in db.users.find(
+        {
+            "trial_ends_at": {"$lt": now_iso},
+            "locked_at": {"$in": [None, ""]},
+        },
+        {"_id": 0},
+    ):
+        # Skip if user has an active/trialing Stripe subscription.
+        b = await db.billing.find_one({"user_id": user["user_id"]}, {"_id": 0})
+        status = ((b or {}).get("subscription_status") or "").lower()
+        if status in {"active", "trialing"}:
+            continue
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"locked_at": now_iso, "updated_at": now_iso}},
+        )
+        locked += 1
+    logger.info("trial lock job: locked %d user(s)", locked)
+
+
 @app.on_event("startup")
 async def _startup_scheduler():
     global _scheduler
@@ -1966,8 +1992,10 @@ async def _startup_scheduler():
                        id="weekly_digest", replace_existing=True)
     _scheduler.add_job(_job_rescan_stale_projects, CronTrigger(hour=3, minute=0),
                        id="nightly_rescan", replace_existing=True)
+    _scheduler.add_job(_job_lock_expired_trials, CronTrigger(hour=4, minute=0),
+                       id="trial_lock", replace_existing=True)
     _scheduler.start()
-    logger.info("scheduler started: weekly_digest (mon 15:00 UTC), nightly_rescan (03:00 UTC)")
+    logger.info("scheduler started: weekly_digest (mon 15:00 UTC), nightly_rescan (03:00 UTC), trial_lock (04:00 UTC)")
 
 
 

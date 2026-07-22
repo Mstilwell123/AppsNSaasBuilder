@@ -2,6 +2,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/lib/auth";
+import { BillingProvider, useBilling } from "@/lib/billing";
 import Login from "@/pages/Login";
 import AuthCallback from "@/pages/AuthCallback";
 import Dashboard from "@/pages/Dashboard";
@@ -14,9 +15,24 @@ import RepoPicker from "@/pages/RepoPicker";
 import ProjectDetail from "@/pages/ProjectDetail";
 import PaymentSuccess from "@/pages/PaymentSuccess";
 import PaymentCancel from "@/pages/PaymentCancel";
+import Pricing from "@/pages/Pricing";
 import ProtectedRoute from "@/components/ProtectedRoute";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+
+// Routes reachable while a user's trial has expired.
+const LOCK_ALLOWED = new Set(["/pricing", "/payment/success", "/payment/cancel"]);
+
+function LockedGate({ children }) {
+  const location = useLocation();
+  const { subscription, loading } = useBilling();
+  if (loading) return children;
+  if (subscription?.plan_key === "expired" && !LOCK_ALLOWED.has(location.pathname)) {
+    return <Navigate to="/pricing" replace />;
+  }
+  return children;
+}
+
 function AppRouter() {
   const location = useLocation();
   // Synchronous session_id check (must run before ProtectedRoute) — see auth playbook.
@@ -29,13 +45,16 @@ function AppRouter() {
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/pricing" element={<Pricing />} />
       <Route path="/payment/success" element={<PaymentSuccess />} />
       <Route path="/payment/cancel" element={<PaymentCancel />} />
       <Route
         path="/dashboard"
         element={
           <ProtectedRoute>
-            <Dashboard />
+            <LockedGate>
+              <Dashboard />
+            </LockedGate>
           </ProtectedRoute>
         }
       />
@@ -43,7 +62,9 @@ function AppRouter() {
         path="/connect"
         element={
           <ProtectedRoute>
-            <Connect />
+            <LockedGate>
+              <Connect />
+            </LockedGate>
           </ProtectedRoute>
         }
       />
@@ -51,7 +72,9 @@ function AppRouter() {
         path="/repos"
         element={
           <ProtectedRoute>
-            <RepoPicker />
+            <LockedGate>
+              <RepoPicker />
+            </LockedGate>
           </ProtectedRoute>
         }
       />
@@ -59,7 +82,9 @@ function AppRouter() {
         path="/projects/:id"
         element={
           <ProtectedRoute>
-            <ProjectDetail />
+            <LockedGate>
+              <ProjectDetail />
+            </LockedGate>
           </ProtectedRoute>
         }
       />
@@ -67,7 +92,9 @@ function AppRouter() {
         path="/settings"
         element={
           <ProtectedRoute>
-            <Settings />
+            <LockedGate>
+              <Settings />
+            </LockedGate>
           </ProtectedRoute>
         }
       />
@@ -81,8 +108,10 @@ export default function App() {
     <div className="App min-h-screen bg-background text-foreground">
       <BrowserRouter>
         <AuthProvider>
-          <AppRouter />
-          <Toaster position="top-right" richColors closeButton />
+          <BillingProvider>
+            <AppRouter />
+            <Toaster position="top-right" richColors closeButton />
+          </BillingProvider>
         </AuthProvider>
       </BrowserRouter>
     </div>

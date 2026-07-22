@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AppShell from "@/components/AppShell";
+import UpgradeModal from "@/components/UpgradeModal";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { guard } from "@/lib/billing";
 import { Github, Star, GitBranch, ArrowRight, Search, Sparkles } from "lucide-react";
 
 export default function RepoPicker() {
@@ -17,6 +19,7 @@ export default function RepoPicker() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [upgrade, setUpgrade] = useState({ open: false, detail: {} });
 
   useEffect(() => {
     (async () => {
@@ -61,13 +64,18 @@ export default function RepoPicker() {
     setSaving(true);
     let ok = 0;
     let hitLimit = false;
+    let limitDetail = {};
     for (const id of selection) {
       try {
         await api.trackProject(id);
         ok += 1;
       } catch (err) {
-        const code = err?.data?.detail?.code;
-        if (err?.status === 402 && code === "free_tier_limit_reached") {
+        const isGated = guard(err, {
+          onUpgrade: (detail) => {
+            limitDetail = detail;
+          },
+        });
+        if (isGated) {
           hitLimit = true;
           break;
         }
@@ -76,12 +84,7 @@ export default function RepoPicker() {
     }
     setSaving(false);
     if (hitLimit) {
-      toast.error("Free plan limit reached. Upgrade to Pro for unlimited repos.", {
-        action: {
-          label: "Upgrade",
-          onClick: () => navigate("/settings"),
-        },
-      });
+      setUpgrade({ open: true, detail: limitDetail });
       if (ok > 0) navigate("/dashboard", { replace: true });
       return;
     }
@@ -191,6 +194,11 @@ export default function RepoPicker() {
           })}
         </div>
       )}
+      <UpgradeModal
+        open={upgrade.open}
+        onOpenChange={(v) => setUpgrade((prev) => ({ ...prev, open: v }))}
+        detail={upgrade.detail}
+      />
     </AppShell>
   );
 }

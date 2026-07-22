@@ -70,7 +70,7 @@ export default function Register() {
           Start your portfolio.
         </h1>
         <p className="text-sm text-muted-foreground mb-8">
-          Free tier: track up to 3 repos. Upgrade any time.
+          Get a 7-day trial on Solo Builder. No credit card required.
         </p>
 
         <form onSubmit={onSubmit} className="space-y-4" data-testid="register-form">

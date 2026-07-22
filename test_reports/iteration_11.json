@@ -1,0 +1,38 @@
+{
+  "summary": "iteration_11 full-stack testing PASS. Backend: 117/117 pytest green (106 previous regression + 11 new for iteration_11 focus). New backend tests cover /billing/plans public shape + 4-plan set, fresh-register subscription = solo-trial (~+7d), checkout accepts plan_key (solo/team/agency)/null/rejects white_label+bogus, POST /projects returns 402 trial_expired when trial_ends_at is past, and _job_lock_expired_trials cron (locks expired-no-sub users, skips active-Stripe-sub users, skips still-in-trial users, idempotent on second run). Frontend: verified /pricing renders 4 cards ($29/$49/$149/Custom) with correct data-testids and 'Popular' badge on team; unauth 'Start 7-day trial' navigates to /register; authed trial-solo user sees pricing-current-badge-solo + disabled Current CTA while team/agency CTAs remain clickable; trial banner shows '7 days left'; BillingCard on /settings shows Trial: Solo Builder heading, 7 DAYS LEFT badge (billing-trial-days-left), and See plans/Choose plan CTA that navigates to /pricing; LockedGate correctly redirects expired users from /dashboard, /settings, /repos, /connect to /pricing, and permits /pricing, /payment/success, /payment/cancel; expired banner (pricing-expired-banner) renders on /pricing after lock. Register page copy verified 'Get a 7-day trial on Solo Builder. No credit card required.'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Settings > Billing", "issues": ["BillingCard CTA for trial users reads 'See plans' — spec/task text mentions 'Choose your plan'. Functionally correct (navigates to /pricing, has data-testid=billing-choose-plan-button) but copy differs. Cosmetic."]},
+      {"screen": "Settings > Profile", "issues": ["Provider column shows 'Google' for a locally-registered email/password user (pre-existing, out of scope for this iteration)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_billing_v2_and_cron.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/it11_all.xml",
+    "/app/test_reports/pytest/it11_new.xml"
+  ],
+  "action_items": [
+    "(Optional cosmetic) Align BillingCard trial CTA copy with spec: change 'See plans' → 'Choose your plan' if strict match desired (data-testid already billing-choose-plan-button).",
+    "(Carry-over from iter_10) checkout Stripe session metadata still hardcodes STRIPE_PRO_LOOKUP_KEY; should use plan['lookup_key']. Not test-visible.",
+    "UpgradeModal end-to-end trigger (via RepoPicker 402) was not exercised in browser because reproducing requires github-connected + 8 tracked projects on trial. Code path verified via source inspection: guard() wired, UpgradeModal mounted with data-testid, plan buttons render. Recommend a devtool/seed helper if this needs deeper e2e coverage."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2023 lines — recommend splitting into routers (auth/, billing/, projects/, digest/) as flagged previously.",
+    "_job_lock_expired_trials filter uses {'$in': [None, '']} on locked_at — this correctly includes users with unset locked_at IFF MongoDB treats missing == null (which motor/pymongo do by default), but making the intent explicit via {'$or':[{'locked_at':{'$exists':false}},{'locked_at':null}]} would be safer.",
+    "FastAPI @app.on_event('startup'/'shutdown') deprecated — migrate to lifespan handlers.",
+    "BillingProvider `refresh` is only re-triggered when `user` reference changes; if a user cancels a Stripe sub without a full page reload the subscription won't refresh — consider exposing refresh() from useBilling and calling it after successful checkout/portal returns.",
+    "Legacy FREE_TIER_PROJECT_LIMIT env var still read but unused for gating (carry-over)."
+  ],
+  "updated_files": ["/app/backend/tests/test_billing_v2_and_cron.py"],
+  "success_rate": {"backend": "100% (117/117)", "frontend": "100% of exercised flows (pricing render, unauth CTA, current-plan highlight, trial banner, settings BillingCard trial state, LockedGate 4 protected + 3 allowed routes, expired banner, register copy)"},
+  "test_credentials": "New users registered per test via POST /api/auth/register with email TEST_it11..._<hex>@example.com and password 'correct-horse-battery-staple'. Cleaned up post-test (users, user_sessions, billing, projects matching TEST_it11 emails).",
+  "seed_data_creation": "Per-test users via /api/auth/register; for trial-expired tests, trial_ends_at was directly mutated in Mongo to a past ISO. Cron test additionally upserted a billing row with subscription_status='active' for one user to prove skip-logic.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Billing v2 + LockedGate + trial-lock cron all verified end-to-end. If next iteration touches BillingProvider refresh semantics, UpgradeModal trigger paths, or the /pricing highlight for Stripe-subscribed (source='stripe') users, add tests for those specifically — this run only covered trial and expired states on the frontend. Backend Stripe-source subscription branch is already covered by existing backend_test.py (see iteration_10 report).",
+  "rca of the issue": "N/A — feature verification only."
+}
