@@ -74,13 +74,34 @@ export default function ProjectDetail() {
     setScanConfirmOpen(false);
     setScanning(true);
     try {
-      const updated = await api.scanProject(id);
-      setProject(updated);
-      // Refresh history in the background — best-effort.
-      api.scoreHistory(id, 20).then(setHistory).catch(() => {});
-      toast.success("Scan complete");
+      // Endpoint now returns { id, status: 'running' } immediately (P6 async scan).
+      const started = await api.scanProject(id);
+      // Poll every 2s, up to 60s total (30 attempts) — LLM scan is usually <10s.
+      const maxAttempts = 30;
+      for (let i = 0; i < maxAttempts; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 2000));
+        // eslint-disable-next-line no-await-in-loop
+        const status = await api.getScan(started.id).catch(() => null);
+        if (!status) continue;
+        if (status.status === "done") {
+          const [p, h] = await Promise.all([
+            api.getProject(id),
+            api.scoreHistory(id, 20).catch(() => []),
+          ]);
+          setProject(p);
+          setHistory(h);
+          toast.success("Scan complete");
+          return;
+        }
+        if (status.status === "error") {
+          toast.error(status.error || "Scan failed");
+          return;
+        }
+      }
+      toast.error("Scan is taking longer than expected — check back in a minute.");
     } catch (err) {
-      toast.error(err?.data?.detail || "Scan failed");
+      toast.error(err?.data?.detail || "Scan failed to start");
     } finally {
       setScanning(false);
     }

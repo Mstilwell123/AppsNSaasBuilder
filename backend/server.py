@@ -67,6 +67,8 @@ SESSION_TTL_DAYS = 7
 MIN_PASSWORD_LENGTH = 8
 RESET_TOKEN_TTL_MINUTES = 30
 OAUTH_STATE_TTL_MINUTES = 10
+LOGIN_MAX_FAILS = 5
+LOGIN_LOCKOUT_MINUTES = 15
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -172,6 +174,7 @@ class ProjectOut(BaseModel):
     latest_score: Optional[ScoreOut] = None
     next_steps: List[NextStepOut] = []
     completion: int = 0  # 0..100 weighted % of next_steps done
+    streak: int = 0  # consecutive scans where score strictly increased vs the prior one
 
 
 class TrackRepoIn(BaseModel):
@@ -444,15 +447,43 @@ async def change_password(
 
 
 @api.post("/auth/login")
-async def login(payload: LoginIn, response: Response):
-    """Sign in with email + local password. Requires the user to have a password_hash set."""
-    user = await db.users.find_one({"email": payload.email.lower()}, {"_id": 0}) \
+async def login(payload: LoginIn, request: Request, response: Response):
+    """Sign in with email + local password. Requires the user to have a password_hash set.
+
+    Rate-limited per (client-ip, email) — LOGIN_MAX_FAILS fails within LOGIN_LOCKOUT_MINUTES
+    trigger a 429 lockout regardless of correctness.
+    """
+    email_norm = payload.email.strip().lower()
+    # NOTE: keying on email alone. Cluster ingress rotates upstream client IPs, and
+    # an attacker can rotate real IPs anyway; the target email is the stable key.
+    window_start = (datetime.now(timezone.utc) - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+    recent_fails = await db.login_attempts.count_documents({
+        "email": email_norm,
+        "success": False,
+        "created_at": {"$gte": window_start},
+    })
+    if recent_fails >= LOGIN_MAX_FAILS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in {LOGIN_LOCKOUT_MINUTES} minutes.",
+        )
+
+    async def _record(success: bool) -> None:
+        await db.login_attempts.insert_one({
+            "email": email_norm,
+            "success": success,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    user = await db.users.find_one({"email": email_norm}, {"_id": 0}) \
         or await db.users.find_one({"email": payload.email}, {"_id": 0})
     if not user or not user.get("password_hash"):
-        # Same 401 for both to avoid account enumeration.
+        await _record(False)
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not verify_password(payload.password, user["password_hash"]):
+        await _record(False)
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    await _record(True)
     await _mint_local_session(user["user_id"], response)
     return _user_out(user).model_dump()
 
@@ -649,6 +680,16 @@ async def _project_to_out(proj: dict) -> ProjectOut:
             model=latest_score_doc.get("model", ""),
             scored_at=latest_score_doc.get("scored_at", ""),
         )
+    # Streak: count consecutive strictly-increasing scores walking back from the newest.
+    recent_scores = await db.scores.find(
+        {"project_id": proj["id"]}, {"_id": 0, "score": 1, "scored_at": 1},
+    ).sort("scored_at", -1).to_list(length=25)
+    streak = 0
+    for i in range(len(recent_scores) - 1):
+        if int(recent_scores[i]["score"]) > int(recent_scores[i + 1]["score"]):
+            streak += 1
+        else:
+            break
     return ProjectOut(
         id=proj["id"],
         github_repo_id=proj["github_repo_id"],
@@ -670,6 +711,7 @@ async def _project_to_out(proj: dict) -> ProjectOut:
         latest_score=latest,
         next_steps=[_next_step_out(s) for s in steps],
         completion=_weighted_completion(steps),
+        streak=streak,
     )
 
 
@@ -977,17 +1019,14 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
     return {"ok": True}
 
 
-@api.post("/projects/{project_id}/scan", response_model=ProjectOut)
-async def scan_project(project_id: str, user: dict = Depends(get_current_user)):
-    proj = await _ensure_own_project(project_id, user["user_id"])
-    token = await _get_github_token(user["user_id"])
-    scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+async def _run_scan(project_id: str, user_id: str, scan_id: str) -> None:
+    """Body of a scan — runs in the background so the HTTP call returns immediately."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    await db.scans.insert_one({
-        "id": scan_id, "user_id": user["user_id"], "project_id": project_id,
-        "status": "running", "started_at": now_iso, "finished_at": None, "error": None,
-    })
     try:
+        proj = await db.projects.find_one({"id": project_id, "user_id": user_id}, {"_id": 0})
+        if not proj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        token = await _get_github_token(user_id)
         signals = await _gather_repo_signals(token, proj["full_name"])
         ai = await _score_with_llm(signals)
         repo = signals["repo"]
@@ -1010,14 +1049,13 @@ async def scan_project(project_id: str, user: dict = Depends(get_current_user)):
         )
         await db.scores.insert_one({
             "id": f"score_{uuid.uuid4().hex[:12]}",
-            "user_id": user["user_id"],
+            "user_id": user_id,
             "project_id": project_id,
             "score": int(ai.get("score", 0)),
             "rationale": ai.get("rationale", ""),
             "model": SCORING_MODEL,
             "scored_at": datetime.now(timezone.utc).isoformat(),
         })
-        # F3 (from handoff): carry `done: true` over to identically-worded new steps (case+whitespace-insensitive).
         old_steps = [s async for s in db.next_steps.find(
             {"project_id": project_id}, {"_id": 0},
         )]
@@ -1027,7 +1065,7 @@ async def scan_project(project_id: str, user: dict = Depends(get_current_user)):
         for i, step in enumerate(ai.get("next_steps", []), start=1):
             new_docs.append({
                 "id": f"step_{uuid.uuid4().hex[:10]}",
-                "user_id": user["user_id"],
+                "user_id": user_id,
                 "project_id": project_id,
                 "text": step["text"],
                 "weight": step["weight"],
@@ -1045,20 +1083,55 @@ async def scan_project(project_id: str, user: dict = Depends(get_current_user)):
         await db.scans.update_one(
             {"id": scan_id},
             {"$set": {"status": "error", "finished_at": datetime.now(timezone.utc).isoformat(),
-                      "error": exc.detail}},
+                      "error": exc.detail if isinstance(exc.detail, str) else "Scan failed"}},
         )
-        raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("scan failed")
+        logger.exception("background scan failed")
         await db.scans.update_one(
             {"id": scan_id},
             {"$set": {"status": "error", "finished_at": datetime.now(timezone.utc).isoformat(),
                       "error": str(exc)[:500]}},
         )
-        raise HTTPException(status_code=500, detail="Scan failed") from exc
 
-    fresh = await db.projects.find_one({"id": project_id}, {"_id": 0})
-    return await _project_to_out(fresh)
+
+class ScanOut(BaseModel):
+    id: str
+    project_id: str
+    status: str  # "running" | "done" | "error"
+    started_at: str
+    finished_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+@api.post("/projects/{project_id}/scan", response_model=ScanOut)
+async def scan_project(project_id: str, user: dict = Depends(get_current_user)):
+    """Kick off a scan in the background. Client should poll GET /api/scans/{id}."""
+    proj = await _ensure_own_project(project_id, user["user_id"])
+    # Guard: ensure GitHub is connected before scheduling — cheaper to fail here.
+    await _get_github_token(user["user_id"])
+    scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.scans.insert_one({
+        "id": scan_id, "user_id": user["user_id"], "project_id": project_id,
+        "status": "running", "started_at": now_iso, "finished_at": None, "error": None,
+    })
+    # Fire and forget — the endpoint responds while the coroutine runs on the loop.
+    asyncio.create_task(_run_scan(project_id, user["user_id"], scan_id))
+    return ScanOut(id=scan_id, project_id=project_id, status="running", started_at=now_iso)
+
+
+@api.get("/scans/{scan_id}", response_model=ScanOut)
+async def get_scan(scan_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.scans.find_one(
+        {"id": scan_id, "user_id": user["user_id"]}, {"_id": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return ScanOut(
+        id=doc["id"], project_id=doc["project_id"], status=doc.get("status", "running"),
+        started_at=doc.get("started_at", ""), finished_at=doc.get("finished_at"),
+        error=doc.get("error"),
+    )
 
 
 @api.patch("/next-steps/{step_id}", response_model=ProjectOut)

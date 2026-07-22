@@ -1126,3 +1126,247 @@ def test_digest_send_test_with_data_returns_coherent_error_or_ok(seeded_with_cle
             assert "send failed" in body.get("detail", "").lower()
         except ValueError:
             pass
+
+
+# ================================================================
+# iteration_9 — Streak / Rate-limit login / Async scan
+# ================================================================
+import time as _time
+
+
+def _seed_scores_sequence(user_id, project_id, scores):
+    """Seed scores with strictly ordered scored_at timestamps (idx 0 = oldest)."""
+    base = datetime.now(timezone.utc) - timedelta(hours=len(scores))
+    for i, s in enumerate(scores):
+        db.scores.insert_one({
+            "id": f"score_test_{uuid.uuid4().hex[:6]}",
+            "user_id": user_id, "project_id": project_id,
+            "score": int(s), "rationale": "seq", "model": "test",
+            "scored_at": (base + timedelta(minutes=i)).isoformat(),
+        })
+
+
+# ---------- Streak ----------
+def test_streak_zero_when_no_scores(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "s0", "gh/s0")
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.status_code == 200
+    assert r.json()["streak"] == 0
+
+
+def test_streak_zero_when_single_score(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "s1", "gh/s1")
+    _seed_scores_sequence(uid, pid, [50])
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.json()["streak"] == 0
+
+
+def test_streak_strict_increases_walking_back(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "s3", "gh/s3")
+    _seed_scores_sequence(uid, pid, [40, 50, 60, 75])  # newest=75
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.json()["streak"] == 3
+
+
+def test_streak_breaks_on_drop_in_middle(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "sdrop", "gh/sdrop")
+    _seed_scores_sequence(uid, pid, [40, 50, 45, 75])  # newest=75, prev=45 → 75>45 (+1), then 45<50 break
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.json()["streak"] == 1
+
+
+def test_streak_zero_when_flat(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "sflat", "gh/sflat")
+    _seed_scores_sequence(uid, pid, [40, 40, 40])
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.json()["streak"] == 0
+
+
+def test_streak_five_strict(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid = _seed_project_no_score(uid, "sbig", "gh/sbig")
+    _seed_scores_sequence(uid, pid, [10, 20, 30, 40, 50])
+    r = requests.get(f"{API}/projects/{pid}", headers=auth(token))
+    assert r.json()["streak"] == 4
+
+
+def test_streak_user_isolation(seeded_with_cleanup):
+    uid_a, token_a, _ = seeded_with_cleanup
+    pid_a = _seed_project_no_score(uid_a, "iso", "gh/iso")
+    # user B has scores under B's user_id but on same project? No — different project.
+    # Ensure scoring per-project (not leaking cross-user via project_id filter).
+    uid_b, token_b, _ = _seed_user_and_session()
+    try:
+        # Add scores under B's user_id but on A's project_id — should still count because
+        # _project_to_out filters by project_id only. That's fine; scoring is project-scoped.
+        # Instead: ensure A's project can't be fetched by B (ownership).
+        _seed_scores_sequence(uid_a, pid_a, [10, 20, 30])
+        rb = requests.get(f"{API}/projects/{pid_a}", headers=auth(token_b))
+        assert rb.status_code == 404
+        ra = requests.get(f"{API}/projects/{pid_a}", headers=auth(token_a))
+        assert ra.json()["streak"] == 2
+    finally:
+        db.users.delete_many({"user_id": uid_b})
+        db.user_sessions.delete_many({"user_id": uid_b})
+
+
+# ---------- Rate-limit login ----------
+def _cleanup_login_attempts(email):
+    db.login_attempts.delete_many({"email": email.strip().lower()})
+
+
+def test_login_rate_limit_triggers_on_6th_wrong():
+    email = _rand_email()
+    try:
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "correctpass1"})
+        assert r.status_code == 200
+        _cleanup_login_attempts(email)
+        # 5 wrong → 401
+        for i in range(5):
+            rr = requests.post(f"{API}/auth/login", json={"email": email, "password": "WRONGpw"})
+            assert rr.status_code == 401, f"attempt {i+1}: {rr.status_code}"
+        # 6th wrong → 429
+        r6 = requests.post(f"{API}/auth/login", json={"email": email, "password": "WRONGpw"})
+        assert r6.status_code == 429
+        assert "too many failed attempts" in r6.json()["detail"].lower()
+        # Correct password on same locked email → still 429
+        rc = requests.post(f"{API}/auth/login", json={"email": email, "password": "correctpass1"})
+        assert rc.status_code == 429
+    finally:
+        _cleanup_login_attempts(email)
+        _cleanup_email(email)
+
+
+def test_login_rate_limit_reset_after_cleanup():
+    email = _rand_email()
+    try:
+        r = requests.post(f"{API}/auth/register",
+                          json={"email": email, "password": "correctpass1"})
+        assert r.status_code == 200
+        _cleanup_login_attempts(email)
+        for _ in range(5):
+            requests.post(f"{API}/auth/login", json={"email": email, "password": "WRONG"})
+        assert requests.post(f"{API}/auth/login",
+                             json={"email": email, "password": "correctpass1"}).status_code == 429
+        # Clear window and retry
+        _cleanup_login_attempts(email)
+        ok = requests.post(f"{API}/auth/login", json={"email": email, "password": "correctpass1"})
+        assert ok.status_code == 200
+    finally:
+        _cleanup_login_attempts(email)
+        _cleanup_email(email)
+
+
+def test_login_rate_limit_per_email_isolation():
+    email_a = _rand_email()
+    email_b = _rand_email()
+    try:
+        for e in (email_a, email_b):
+            assert requests.post(f"{API}/auth/register",
+                                 json={"email": e, "password": "correctpass1"}).status_code == 200
+            _cleanup_login_attempts(e)
+        # Trip A
+        for _ in range(5):
+            requests.post(f"{API}/auth/login", json={"email": email_a, "password": "WRONG"})
+        assert requests.post(f"{API}/auth/login",
+                             json={"email": email_a, "password": "WRONG"}).status_code == 429
+        # B still fine
+        rb = requests.post(f"{API}/auth/login",
+                           json={"email": email_b, "password": "correctpass1"})
+        assert rb.status_code == 200
+    finally:
+        _cleanup_login_attempts(email_a); _cleanup_login_attempts(email_b)
+        _cleanup_email(email_a); _cleanup_email(email_b)
+
+
+def test_login_rate_limit_on_unknown_email():
+    email = f"TEST_nolock_{uuid.uuid4().hex[:6]}@example.com"
+    try:
+        for _ in range(5):
+            r = requests.post(f"{API}/auth/login", json={"email": email, "password": "whatever1"})
+            assert r.status_code == 401
+        r6 = requests.post(f"{API}/auth/login", json={"email": email, "password": "whatever1"})
+        assert r6.status_code == 429
+    finally:
+        _cleanup_login_attempts(email)
+
+
+def test_login_success_attempts_dont_count():
+    email = _rand_email()
+    try:
+        assert requests.post(f"{API}/auth/register",
+                             json={"email": email, "password": "correctpass1"}).status_code == 200
+        _cleanup_login_attempts(email)
+        for _ in range(5):
+            r = requests.post(f"{API}/auth/login",
+                              json={"email": email, "password": "correctpass1"})
+            assert r.status_code == 200
+        r6 = requests.post(f"{API}/auth/login",
+                          json={"email": email, "password": "correctpass1"})
+        assert r6.status_code == 200
+    finally:
+        _cleanup_login_attempts(email)
+        _cleanup_email(email)
+
+
+# ---------- Async scan ----------
+def test_scan_without_github_connection_400(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    pid, _ = _seed_project(uid)
+    before = db.scans.count_documents({"project_id": pid})
+    r = requests.post(f"{API}/projects/{pid}/scan", headers=auth(token))
+    assert r.status_code == 400
+    # No scans row inserted
+    assert db.scans.count_documents({"project_id": pid}) == before
+
+
+def test_scan_happy_path_returns_running_then_transitions(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    _seed_github_connection(uid)
+    pid, _ = _seed_project(uid)
+    r = requests.post(f"{API}/projects/{pid}/scan", headers=auth(token))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["project_id"] == pid
+    assert body["status"] == "running"
+    assert body["id"].startswith("scan_")
+    assert body["started_at"]
+    scan_id = body["id"]
+    # Poll up to 20s for transition
+    final_status = None
+    for _ in range(20):
+        rg = requests.get(f"{API}/scans/{scan_id}", headers=auth(token))
+        assert rg.status_code == 200
+        final_status = rg.json()["status"]
+        if final_status in ("done", "error"):
+            break
+        _time.sleep(1)
+    # Fake token → should error (GitHub rejects)
+    assert final_status in ("done", "error"), f"scan stuck in running: {final_status}"
+
+
+def test_scan_get_ownership_404(seeded_with_cleanup):
+    uid, token, _ = seeded_with_cleanup
+    _seed_github_connection(uid)
+    pid, _ = _seed_project(uid)
+    r = requests.post(f"{API}/projects/{pid}/scan", headers=auth(token))
+    scan_id = r.json()["id"]
+    uid_b, token_b, _ = _seed_user_and_session()
+    try:
+        rb = requests.get(f"{API}/scans/{scan_id}", headers=auth(token_b))
+        assert rb.status_code == 404
+    finally:
+        db.users.delete_many({"user_id": uid_b})
+        db.user_sessions.delete_many({"user_id": uid_b})
+
+
+def test_scan_get_unknown_id_404(seeded_with_cleanup):
+    _, token, _ = seeded_with_cleanup
+    r = requests.get(f"{API}/scans/does-not-exist", headers=auth(token))
+    assert r.status_code == 404

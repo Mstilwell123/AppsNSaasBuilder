@@ -1,0 +1,21 @@
+{
+  "summary": "iteration_9 backend + frontend full regression PASS. 90/90 pytest (74 previous + 16 new for streak / login rate-limit / async scan) all green. Frontend UI verified: streak chip renders with flame + number '3' on a streak>=2 project and is absent on streak<2. Scan-confirm-dialog opens on click and calling /scan without a github connection shows the expected 'GitHub is not connected' error toast.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1900 lines — still growing without modularization; consider splitting into auth/, projects/, billing/, digest/ routers.",
+    "Login rate limit keys on email only (documented in-code) — an attacker probing many emails from many IPs is unaffected; that's a per-account brute-force gate, not a global bot gate. Acceptable per handoff note but worth surfacing.",
+    "_run_scan schedules via asyncio.create_task on the request loop — if the worker process restarts mid-scan, the scans row stays in 'running' forever with no reaper. Consider a periodic sweeper that marks stale running scans as 'error' (e.g. started_at > 5min ago and still running).",
+    "GET /api/scans/{id} filters by user_id (good, ownership tested)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (90/90)", "frontend": "100% (streak chip present/absent + scan confirm dialog opens + toast on 400)"},
+  "test_credentials": "Ephemeral TEST_fe_<uuid>@example.com registered via /api/auth/register, session_token used as cookie. Wiped in cleanup.",
+  "seed_data_creation": "Direct mongo seeded 2 projects with 4-score and 1-score sequences under a fresh user + fake github_connections (Fernet-encrypted stub) for dashboard streak render + scan-flow smoke.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All three iteration_9 features (streak field on ProjectOut, login_attempts rate-limit collection, async scan with new ScanOut shape + GET /api/scans/{id}) verified. Full pytest still 90/90. The prior POST /projects/{id}/scan → ProjectOut → ScanOut contract change did not break any existing test because no earlier test asserted on that response shape (only DELETE cascade touched db.scans directly, which still works).",
+  "rca of the issue": "N/A — all features work as specified."
+}

@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import Sparkline from "@/components/Sparkline";
-import { ExternalLink, GitBranch, Star, CircleDot } from "lucide-react";
+import { ExternalLink, GitBranch, Star, CircleDot, Flame } from "lucide-react";
 
 function LanguagePills({ languages = {}, max = 3 }) {
   const total = Object.values(languages).reduce((a, b) => a + b, 0) || 1;
@@ -81,6 +81,15 @@ export default function ProjectCard({ project }) {
           >
             {typeof score === "number" ? score : "—"}
           </p>
+          {project.streak >= 2 && (
+            <span
+              data-testid={`project-card-streak-${project.id}`}
+              className="mt-2 inline-flex items-center gap-1 text-[10px] uppercase tracking-[0.14em] px-1.5 py-0.5 rounded-sm border border-orange-400/40 text-orange-300 bg-background"
+              title={`${project.streak} consecutive scans improving`}
+            >
+              <Flame className="h-3 w-3" /> {project.streak}
+            </span>
+          )}
         </div>
       </div>
 

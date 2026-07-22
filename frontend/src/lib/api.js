@@ -58,6 +58,7 @@ export const api = {
   getProject: (id) => request(`/projects/${id}`),
   deleteProject: (id) => request(`/projects/${id}`, { method: "DELETE" }),
   scanProject: (id) => request(`/projects/${id}/scan`, { method: "POST" }),
+  getScan: (scan_id) => request(`/scans/${scan_id}`),
   toggleNextStep: (id, done) =>
     request(`/next-steps/${id}`, { method: "PATCH", body: { done } }),
   topMovers: (limit = 3) => request(`/movers?limit=${limit}`),
