@@ -38,37 +38,56 @@ publicly-exposed admin password.
 ## What's been implemented (2026-02)
 - Emergent Google Auth end-to-end (session exchange, cookie, /me, logout).
 - Local password: set + change flow with all validation branches.
-- **Local email + password login** (`POST /api/auth/login`) — enumeration-safe.
-- **Forgot password + reset password** via Resend (30-min single-use tokens).
-- Settings page (profile + password + billing) with data-testids and inline errors.
-- Login page with email/password form + Google as secondary; `/forgot-password`
-  and `/reset-password` pages fully wired.
-- **CORS tightened**: `CORS_ORIGINS` scoped to preview host + `http://localhost:3000`.
-- **Brand rebrand**: "App N SaaS Builder" throughout header, login, emails.
-- **GitHub OAuth (P2)**: connect, callback, repos, disconnect. AES-256 encrypted tokens.
-- **Projects (P2)**: full CRUD + repo picker + dashboard grid of ProjectCard.
-- **AI scoring (P3)**: Claude Haiku 4.5 via Emergent LLM key. Structured JSON output.
-- **Polish (P4)**: 12-week sparkline, CI badge, live URL, weighted next-steps checklist
-  with server-side completion %, re-scan carries over done-flags for identical steps.
-- **Stripe billing (P5)**: $30/mo Pro plan, 3-repo free-tier cap (HTTP 402 with
-  `code: "free_tier_limit_reached"`). Endpoints: `/api/billing/status`, `/checkout`,
-  `/portal`, `/api/payments/status/{sid}`, `/api/stripe/webhook`. Tax mode = full
-  (Stripe Managed Payments). Settings → Billing card. `/payment/success` polling +
-  `/payment/cancel` pages.
-- **Top Movers widget**: `GET /api/movers` returns projects with 2+ scores sorted by
-  absolute delta desc; zero-delta and single-score excluded. Dashboard strip above
-  the grid with up/down chips.
-- Testing agent 7× iterations, all green (58/58 backend + 9/9 UI at latest).
-- `/app/auth_testing.md` + `/app/memory/test_credentials.md` current.
+- Local email + password login (`POST /api/auth/login`), enumeration-safe.
+- **Email/password sign-up** (`POST /api/auth/register`), lowercase-normalized email,
+  duplicate → 409, min-8 pw, immediate session on success. `/register` page + link
+  from `/login`.
+- Forgot password + reset password via Resend (30-min single-use sha256 tokens).
+- Settings page (profile + password + billing + weekly digest) with data-testids.
+- Login page with email/password form + Google as secondary; /forgot-password,
+  /reset-password, /register pages fully wired.
+- CORS scoped to preview host + http://localhost:3000.
+- Brand: "App N SaaS Builder".
+- GitHub OAuth (public_repo), AES-256 Fernet-encrypted tokens, disconnect endpoint.
+- Projects: full CRUD + repo picker + dashboard grid of ProjectCard.
+- AI scoring via Claude Haiku 4.5 (Emergent LLM key), structured JSON.
+- Polish: 12-week sparkline, CI badge, live URL, weighted next-steps checklist
+  with server-side completion %, re-scan preserves done-flags for identical steps.
+- **Score history**: `GET /api/projects/{id}/scores` + SVG line chart on
+  ProjectDetail (renders once ≥2 scans exist).
+- Stripe billing (P5): $30/mo Pro, 3-repo free-tier cap (402 with
+  `code: 'free_tier_limit_reached'`), Managed Payments (tax_mode='full'),
+  Settings → Billing card, /payment/success + /payment/cancel pages.
+- Top Movers widget: `GET /api/movers`, dashboard strip above the grid.
+- **Background jobs (P6, in-process APScheduler)**:
+  - Weekly Progress Digest — Mondays 15:00 UTC.
+  - Nightly re-scan of projects whose latest score is >24h old — 03:00 UTC.
+  - `DISABLE_SCHEDULER=1` env kills both for CI.
+- **Progress Digest email**: `_build_digest_for_user` computes portfolio avg,
+  7-day movers (2+ scores, non-zero delta), shipped-steps-this-week; renders
+  dark-theme HTML + plaintext. Endpoints:
+  - `GET /api/preferences` / `PATCH /api/preferences` — toggle
+    `weekly_digest_enabled` (default true).
+  - `GET /api/digest/preview` — preview + payload.
+  - `POST /api/digest/send-test` — sends the digest to the caller's own email
+    (useful for verifying Resend domain).
+  - Settings → Weekly Digest card with switch + "Send me a preview now" button.
+- **Resend from-domain**: `RESEND_FROM_DOMAIN` env; when set, sender becomes
+  `no-reply@<domain>` (fallback keeps `onboarding@resend.dev` for testing).
+- Testing agent iterations: 1–8, all green (last: 74/74 backend + 100% UI).
 
 ## Backlog / next
-- P1: Sign-up route (email + password) — REGISTER test IDs already declared, no page yet.
 - P2: Private-repo scope-upgrade flow (deferred per PF-1).
 - P2: Password strength meter, reveal-password toggle.
 - P3: Session list + per-device revoke in Settings.
-- P3: Verify a custom Resend domain to unlock reset emails to arbitrary recipients.
-- P6: Background scan queue + cron (currently manual `/scan`).
-- P6: Score history chart (scores collection already retains history).
-- P6: Rate-limit `/api/auth/login` for credential-stuffing hardening.
-- P7: Frontend Playwright coverage for the TopMovers UI (backend 100% covered;
-  main-agent screenshot verified up/down chips render correctly).
+- **P3: Verify a real Resend sending domain** — user must add DNS records at
+  `resend.com/domains`, then set `RESEND_FROM_DOMAIN=<verified-domain>` in
+  backend/.env and restart. This unlocks digest + reset emails to ALL recipients.
+- P6: Async /scan endpoint (return 202 + scan_id, client polls). Nightly cron
+  already covers stale re-scans.
+- P6: Score-history chart on projects with real cadence data — already shipped,
+  needs projects with 2+ scans to render.
+- P6: Rate-limit + brief lockout on `/api/auth/login` (credential-stuffing).
+- P7 code-review items: split server.py into routers (auth/projects/billing/digest);
+  add dispatcher lock to APScheduler jobs before scaling >1 uvicorn worker; wrap
+  `resend.Emails.send` with `asyncio.wait_for(..., timeout=15)`.

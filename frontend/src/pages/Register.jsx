@@ -24,6 +24,10 @@ export default function Register() {
     if (!loading && user) navigate("/dashboard", { replace: true });
   }, [user, loading, navigate]);
 
+  // Do not mount the form for authed / still-loading users — prevents a race
+  // where the duplicate-email 409 renders behind a navigate() from the effect above.
+  if (loading || user) return null;
+
   const onSubmit = async (e) => {
     e.preventDefault();
     const next = {};
