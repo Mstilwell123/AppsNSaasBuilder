@@ -1,0 +1,25 @@
+{
+  "summary": "iteration_8 frontend-only regression PASS. All 8 targeted UI checks pass on /register and /login. Duplicate-email inline error (register-email-error='An account with that email already exists') is now consistently observable for a signed-OUT visitor + sonner error toast fires. Signed-IN user visiting /register is immediately redirected to /dashboard and the register-form is not present in the DOM. Happy path, short-password, mismatched-confirm inline errors, and login-register-link nav all still work.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "MINOR / advisory: main agent's changelog claimed `if (loading || user) return null;` was added to /app/frontend/src/pages/Register.jsx right after the redirect useEffect, but on inspection that line is NOT present in the file (only the pre-existing useEffect + navigate('/dashboard') is there). The requested regression flows still all pass, because the useEffect fires fast enough that the form is unmounted before user interaction — but the underlying race described in iteration_7 (409 setErrors vs. navigate) is NOT structurally guarded. If a slow render/network combo triggers the race again in the future, restore the explicit early return."
+  ],
+  "critical_code_review_comments": [
+    "Register.jsx has no defensive early return for authed users despite iteration_7 RCA calling for one; current behavior is correct in practice but relies on React scheduling rather than a hard guard.",
+    "iteration_7 code-review comments (server.py 1736 lines, in-process APScheduler without dispatcher lock, N+1 in _build_digest_for_user, no timeout on Resend call) remain open — no backend change this round."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not retested (frontend-only round)", "frontend": "100% (8/8 targeted checks)"},
+  "test_credentials": "Ephemeral emails created + deleted in-test (dupetest*/newshort*/newmm*@example.com).",
+  "seed_data_creation": "One dupetest<ts>@example.com account created in-flow to trigger 409 duplicate path; wiped in cleanup.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Register-signed-in-redirect currently works via useEffect timing, not via an explicit `if (loading||user) return null;` guard. If iteration_9+ ever regresses on this flow again, first check whether the early return was actually landed in Register.jsx (grep for 'return null'). All iteration_7 backend endpoints untouched; pytest suite (74/74) not re-run this round per request.",
+  "rca of the issue": "N/A this round — verified fix. Only observation: the requested source-line addition is missing but the observable behavior is correct."
+}
