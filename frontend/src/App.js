@@ -43,11 +43,6 @@ function LockedGate({ children }) {
 }
 
 function AppRouter() {
-  const location = useLocation();
-  // Synchronous session_id check (must run before ProtectedRoute) — see auth playbook.
-  if (location.hash && location.hash.includes("session_id=")) {
-    return <AuthCallback />;
-  }
   return (
     <Routes>
       <Route path="/" element={<Login />} />

@@ -58,7 +58,9 @@ class EmergentProvider(LLMProvider):
         return self._model
 
     async def complete(self, system_prompt: str, user_prompt: str) -> str:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        # Emergent provider — requires emergentintegrations package.
+        # If you're not using Emergent, set LLM_PROVIDER=openai instead.
+        from emergentintegrations.llm.chat import LlmChat, UserMessage  # noqa: F401
 
         chat = LlmChat(
             api_key=self._api_key,
@@ -114,32 +116,32 @@ class OpenAIProvider(LLMProvider):
 def get_llm_provider() -> LLMProvider:
     """Factory: pick the LLM provider based on env vars.
 
-    LLM_PROVIDER  — "emergent" (default) or "openai"
+    LLM_PROVIDER  — "openai" (default) or "emergent"
     EMERGENT_LLM_KEY  — Emergent API key (for emergent provider)
     SCORING_MODEL     — model ID for emergent (default: claude-haiku-4-5-20251001)
     OPENAI_API_KEY    — OpenAI API key (for openai provider)
     OPENAI_MODEL      — model ID for openai (default: gpt-4o-mini)
     """
-    provider_name = os.environ.get("LLM_PROVIDER", "emergent").lower().strip()
+    provider_name = os.environ.get("LLM_PROVIDER", "openai").lower().strip()
 
-    if provider_name == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY", "")
+    if provider_name == "emergent":
+        api_key = os.environ.get("EMERGENT_LLM_KEY", "")
         if not api_key:
             raise RuntimeError(
-                "LLM_PROVIDER=openai but OPENAI_API_KEY is not set. "
-                "Set it in backend/.env"
+                "LLM_PROVIDER=emergent but EMERGENT_LLM_KEY is not set. "
+                "Set it in backend/.env, or use LLM_PROVIDER=openai with OPENAI_API_KEY."
             )
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        logger.info("LLM provider: openai (model=%s)", model)
-        return OpenAIProvider(api_key=api_key, model=model)
+        model = os.environ.get("SCORING_MODEL", "claude-haiku-4-5-20251001")
+        logger.info("LLM provider: emergent (model=%s)", model)
+        return EmergentProvider(api_key=api_key, model=model)
 
-    # Default: Emergent
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+    # Default: OpenAI
+    api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
         raise RuntimeError(
-            "LLM_PROVIDER=emergent (default) but EMERGENT_LLM_KEY is not set. "
-            "Set it in backend/.env, or set LLM_PROVIDER=openai with OPENAI_API_KEY."
+            "LLM_PROVIDER=openai (default) but OPENAI_API_KEY is not set. "
+            "Set it in backend/.env, or set LLM_PROVIDER=emergent with EMERGENT_LLM_KEY."
         )
-    model = os.environ.get("SCORING_MODEL", "claude-haiku-4-5-20251001")
-    logger.info("LLM provider: emergent (model=%s)", model)
-    return EmergentProvider(api_key=api_key, model=model)
+    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    logger.info("LLM provider: openai (model=%s)", model)
+    return OpenAIProvider(api_key=api_key, model=model)

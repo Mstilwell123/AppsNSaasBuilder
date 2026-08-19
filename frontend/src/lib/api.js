@@ -34,7 +34,6 @@ export const api = {
   // Auth
   register: ({ email, password, name }) =>
     request("/auth/register", { method: "POST", body: { email, password, name } }),
-  exchangeSession: (session_id) => request("/auth/session", { method: "POST", body: { session_id } }),
   me: () => request("/auth/me"),
   logout: () => request("/auth/logout", { method: "POST" }),
   login: ({ email, password }) => request("/auth/login", { method: "POST", body: { email, password } }),

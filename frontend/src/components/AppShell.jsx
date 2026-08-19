@@ -9,7 +9,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useAuth } from "@/lib/auth";
-import { Settings as SettingsIcon, LogOut, LayoutGrid, Package, DollarSign, Sparkles, Lightbulb, Briefcase } from "lucide-react";
+import {
+  LayoutGrid, Package, DollarSign, Sparkles, Lightbulb, Briefcase,
+  Settings as SettingsIcon, LogOut, ShieldCheck, Rocket, FileText, FlaskConical,
+} from "lucide-react";
 
 function initials(name = "") {
   return name
@@ -19,6 +22,19 @@ function initials(name = "") {
     .map((n) => n[0]?.toUpperCase() || "")
     .join("");
 }
+
+const NAV_ITEMS = [
+  { key: "dashboard", label: "My Apps", icon: LayoutGrid, path: "/dashboard" },
+  { key: "ideas", label: "Ideas", icon: Lightbulb, path: "/ideas" },
+  { key: "skills", label: "Skills", icon: Sparkles, path: "/skills" },
+  { key: "stack", label: "My Stack", icon: Package, path: "/stack" },
+  { key: "costs", label: "Costs", icon: DollarSign, path: "/costs" },
+  { key: "business", label: "Business", icon: Briefcase, path: "/business" },
+];
+
+const SECONDARY_ITEMS = [
+  { key: "settings", label: "Settings", icon: SettingsIcon, path: "/settings" },
+];
 
 export default function AppShell({ children, active }) {
   const { user, logout } = useAuth();
@@ -30,165 +46,119 @@ export default function AppShell({ children, active }) {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header
-        className="sticky top-0 z-40 bg-background border-b border-border"
-        data-testid="app-shell-header"
+    <div className="flex min-h-screen bg-background text-foreground">
+      {/* Left sidebar */}
+      <aside
+        className="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-border bg-card"
+        data-testid="app-sidebar"
       >
-        <div className="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
-          <Link
-            to="/dashboard"
-            className="font-display text-base tracking-tight flex items-center gap-2 hover:opacity-80 transition-colors duration-200"
-            data-testid="app-shell-brand"
-          >
-            <span className="inline-block h-2 w-2 bg-foreground" />
-            App N SaaS Builder
-          </Link>
-          <nav className="flex items-center gap-1">
+        {/* Brand */}
+        <Link
+          to="/dashboard"
+          className="flex items-center gap-2.5 px-5 py-5"
+          data-testid="sidebar-brand"
+        >
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <span className="text-xs font-bold">AS</span>
+          </div>
+          <div className="min-w-0">
+            <p className="truncate font-display text-sm font-semibold tracking-tight text-foreground">
+              App N SaaS Builder
+            </p>
+            <p className="truncate text-[10px] text-muted-foreground">AI Technical PM</p>
+          </div>
+        </Link>
+
+        {/* Primary nav */}
+        <nav className="flex-1 space-y-0.5 px-3 py-2">
+          {NAV_ITEMS.map(({ key, label, icon: Icon, path }) => (
             <Link
-              to="/dashboard"
-              data-testid="nav-dashboard-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "dashboard"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+              key={key}
+              to={path}
+              data-testid={`nav-${key}-link`}
+              className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
+                active === key
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
-              <span className="inline-flex items-center gap-1.5">
-                <LayoutGrid className="h-3.5 w-3.5" />
-                Dashboard
-              </span>
+              <Icon className="h-4 w-4 shrink-0" />
+              {label}
             </Link>
+          ))}
+
+          <div className="my-3 border-t border-border" />
+
+          {SECONDARY_ITEMS.map(({ key, label, icon: Icon, path }) => (
             <Link
-              to="/stack"
-              data-testid="nav-stack-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "stack"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+              key={key}
+              to={path}
+              data-testid={`nav-${key}-link`}
+              className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
+                active === key
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
-              <span className="inline-flex items-center gap-1.5">
-                <Package className="h-3.5 w-3.5" />
-                My Stack
-              </span>
+              <Icon className="h-4 w-4 shrink-0" />
+              {label}
             </Link>
-            <Link
-              to="/costs"
-              data-testid="nav-costs-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "costs"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-              }`}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <DollarSign className="h-3.5 w-3.5" />
-                Costs
-              </span>
-            </Link>
-            <Link
-              to="/skills"
-              data-testid="nav-skills-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "skills"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-              }`}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Sparkles className="h-3.5 w-3.5" />
-                Skills
-              </span>
-            </Link>
-            <Link
-              to="/ideas"
-              data-testid="nav-ideas-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "ideas"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-              }`}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Lightbulb className="h-3.5 w-3.5" />
-                Ideas
-              </span>
-            </Link>
-            <Link
-              to="/business"
-              data-testid="nav-business-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "business"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-              }`}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Briefcase className="h-3.5 w-3.5" />
-                Business
-              </span>
-            </Link>
-            <Link
-              to="/settings"
-              data-testid="nav-settings-link"
-              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
-                active === "settings"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-              }`}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <SettingsIcon className="h-3.5 w-3.5" />
-                Settings
-              </span>
-            </Link>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                asChild
-                data-testid="user-menu-trigger"
-                className="ml-2 outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-full"
+          ))}
+        </nav>
+
+        {/* Footer */}
+        <div className="border-t border-border p-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild data-testid="sidebar-user-menu">
+              <button className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-secondary">
+                <Avatar className="h-8 w-8 border border-border">
+                  {user?.picture ? <AvatarImage src={user.picture} alt={user.name} /> : null}
+                  <AvatarFallback className="bg-secondary text-xs text-foreground">
+                    {initials(user?.name || user?.email || "U")}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-foreground">
+                    {user?.name || user?.email}
+                  </p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {user?.email}
+                  </p>
+                </div>
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52 bg-card border border-border rounded-md" data-testid="user-menu-content">
+              <DropdownMenuLabel className="flex flex-col gap-0.5">
+                <span className="text-sm">{user?.name}</span>
+                <span className="text-xs text-muted-foreground truncate">{user?.email}</span>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator className="bg-border" />
+              <DropdownMenuItem
+                data-testid="user-menu-settings"
+                onSelect={() => navigate("/settings")}
+                className="cursor-pointer text-sm"
               >
-                <button className="rounded-full">
-                  <Avatar className="h-8 w-8 border border-border">
-                    {user?.picture ? <AvatarImage src={user.picture} alt={user.name} /> : null}
-                    <AvatarFallback className="bg-secondary text-foreground text-xs">
-                      {initials(user?.name || user?.email || "U")}
-                    </AvatarFallback>
-                  </Avatar>
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="w-56 bg-card border border-border rounded-sm"
-                data-testid="user-menu-content"
+                <SettingsIcon className="h-3.5 w-3.5 mr-2" /> Settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="bg-border" />
+              <DropdownMenuItem
+                data-testid="user-menu-logout"
+                onSelect={onLogout}
+                className="cursor-pointer text-sm text-destructive focus:text-destructive"
               >
-                <DropdownMenuLabel className="flex flex-col gap-0.5">
-                  <span className="text-sm">{user?.name}</span>
-                  <span className="text-xs text-muted-foreground truncate">{user?.email}</span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator className="bg-border" />
-                <DropdownMenuItem
-                  data-testid="user-menu-settings"
-                  onSelect={() => navigate("/settings")}
-                  className="cursor-pointer text-sm"
-                >
-                  <SettingsIcon className="h-3.5 w-3.5 mr-2" /> Settings
-                </DropdownMenuItem>
-                <DropdownMenuSeparator className="bg-border" />
-                <DropdownMenuItem
-                  data-testid="user-menu-logout"
-                  onSelect={onLogout}
-                  className="cursor-pointer text-sm text-destructive focus:text-destructive"
-                >
-                  <LogOut className="h-3.5 w-3.5 mr-2" /> Sign out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </nav>
+                <LogOut className="h-3.5 w-3.5 mr-2" /> Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-      </header>
-      <main className="max-w-6xl mx-auto px-6 py-10">{children}</main>
+      </aside>
+
+      {/* Main content */}
+      <main className="flex-1 pl-60">
+        <div className="mx-auto max-w-7xl px-8 py-8">
+          {children}
+        </div>
+      </main>
     </div>
   );
 }

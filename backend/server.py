@@ -182,7 +182,6 @@ def _calc_overall_readiness(dimensions: dict) -> int:
             weighted += int(val) * meta["weight"]
     return round(weighted / total_weight) if total_weight else 0
 
-EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 SESSION_TTL_DAYS = 7
 MIN_PASSWORD_LENGTH = 8
 RESET_TOKEN_TTL_MINUTES = 30
@@ -217,10 +216,6 @@ class UserOut(BaseModel):
 class ChangePasswordIn(BaseModel):
     current_password: Optional[str] = None
     new_password: str
-
-
-class SessionExchangeIn(BaseModel):
-    session_id: str
 
 
 class LoginIn(BaseModel):
@@ -472,54 +467,6 @@ async def _send_reset_email(to_email: str, name: str, reset_link: str) -> None:
 @api.get("/")
 async def root():
     return {"message": "AppNSaasBuilder API"}
-
-
-@api.post("/auth/session")
-async def exchange_session(payload: SessionExchangeIn, response: Response):
-    """Exchange Emergent session_id for a persistent session cookie."""
-    async with httpx.AsyncClient(timeout=15.0) as http:
-        resp = await http.get(EMERGENT_SESSION_URL, headers={"X-Session-ID": payload.session_id})
-    if resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid or expired session_id")
-    data = resp.json()
-    email = data.get("email")
-    name = data.get("name", "")
-    picture = data.get("picture")
-    session_token = data.get("session_token")
-    if not email or not session_token:
-        raise HTTPException(status_code=502, detail="Malformed session response from provider")
-
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
-    if existing:
-        user_id = existing["user_id"]
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"name": name or existing.get("name", ""), "picture": picture,
-                      "updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
-    else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
-            "user_id": user_id,
-            "email": email,
-            "name": name,
-            "picture": picture,
-            "password_hash": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
-
-    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TTL_DAYS)
-    await db.user_sessions.insert_one({
-        "user_id": user_id,
-        "session_token": session_token,
-        "expires_at": expires_at.isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-
-    response.set_cookie(key="session_token", value=session_token, **_cookie_kwargs())
-    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    return _user_out(user).model_dump()
 
 
 @api.get("/auth/me", response_model=UserOut)
