@@ -1537,6 +1537,139 @@ async def delete_stack_service(service_id: str, user: dict = Depends(get_current
     return {"ok": True}
 
 
+# ---------- Software Cost Center ----------
+class CostEntryIn(BaseModel):
+    service_id: Optional[str] = None  # linked stack service
+    project_id: Optional[str] = None  # linked project (for per-app costs)
+    amount: float
+    currency: str = "USD"
+    cost_type: str  # "fixed" | "variable" | "transactional" | "annual" | "one_time"
+    period: str = "monthly"  # "monthly" | "annual" | "one_time"
+    description: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+class CostEntryOut(BaseModel):
+    id: str
+    user_id: str
+    service_id: Optional[str] = None
+    project_id: Optional[str] = None
+    amount: float
+    currency: str = "USD"
+    cost_type: str
+    period: str
+    description: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    created_at: str
+
+def _cost_out(doc: dict) -> CostEntryOut:
+    return CostEntryOut(
+        id=doc["id"], user_id=doc["user_id"], service_id=doc.get("service_id"),
+        project_id=doc.get("project_id"), amount=doc.get("amount", 0),
+        currency=doc.get("currency", "USD"), cost_type=doc.get("cost_type", "fixed"),
+        period=doc.get("period", "monthly"), description=doc.get("description"),
+        start_date=doc.get("start_date"), end_date=doc.get("end_date"),
+        created_at=doc.get("created_at", ""),
+    )
+
+
+@api.get("/costs", response_model=List[CostEntryOut])
+async def list_costs(user: dict = Depends(get_current_user)):
+    cursor = db.costs.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
+    return [_cost_out(c) async for c in cursor]
+
+
+@api.post("/costs", response_model=CostEntryOut)
+async def create_cost(payload: CostEntryIn, user: dict = Depends(get_current_user)):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": f"cost_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "service_id": payload.service_id,
+        "project_id": payload.project_id,
+        "amount": payload.amount,
+        "currency": payload.currency,
+        "cost_type": payload.cost_type,
+        "period": payload.period,
+        "description": payload.description,
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
+        "created_at": now_iso,
+    }
+    await db.costs.insert_one(doc)
+    return _cost_out(doc)
+
+
+@api.delete("/costs/{cost_id}")
+async def delete_cost(cost_id: str, user: dict = Depends(get_current_user)):
+    result = await db.costs.delete_many({"id": cost_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Cost entry not found")
+    return {"ok": True}
+
+
+@api.get("/costs/summary")
+async def costs_summary(user: dict = Depends(get_current_user)):
+    """Aggregate cost summary: portfolio total, monthly, annual, per-project, per-service."""
+    costs = [c async for c in db.costs.find({"user_id": user["user_id"]}, {"_id": 0})]
+    stack = {s["id"]: s for s in await db.stack_services.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).to_list(length=200)}
+
+    monthly_total = 0.0
+    annual_total = 0.0
+    one_time_total = 0.0
+    per_project: dict = {}
+    per_service: dict = {}
+    per_category: dict = {}
+
+    for c in costs:
+        amount = float(c.get("amount", 0))
+        period = c.get("period", "monthly")
+        service_id = c.get("service_id")
+        project_id = c.get("project_id")
+
+        # Annualized
+        if period == "monthly":
+            monthly_total += amount
+            annual_total += amount * 12
+        elif period == "annual":
+            annual_total += amount
+            monthly_total += amount / 12
+        elif period == "one_time":
+            one_time_total += amount
+
+        # Per-project
+        if project_id:
+            per_project[project_id] = per_project.get(project_id, 0) + amount
+
+        # Per-service + per-category
+        if service_id and service_id in stack:
+            svc = stack[service_id]
+            per_service[service_id] = {
+                "name": svc["name"],
+                "category": svc.get("category", "other"),
+                "monthly": per_service.get(service_id, {}).get("monthly", 0) + (
+                    amount if period == "monthly" else amount / 12 if period == "annual" else 0
+                ),
+            }
+            cat = svc.get("category", "other")
+            per_category[cat] = per_category.get(cat, 0) + (
+                amount if period == "monthly" else amount / 12 if period == "annual" else 0
+            )
+
+    return {
+        "monthly_total": round(monthly_total, 2),
+        "annual_total": round(annual_total, 2),
+        "one_time_total": round(one_time_total, 2),
+        "entry_count": len(costs),
+        "per_project": {k: round(v, 2) for k, v in per_project.items()},
+        "per_service": per_service,
+        "per_category": {k: round(v, 2) for k, v in per_category.items()},
+    }
+
+
 # ---------- Billing (Stripe subscription) ----------
 class BillingCheckoutIn(BaseModel):
     origin_url: str

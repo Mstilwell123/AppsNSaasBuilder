@@ -87,4 +87,9 @@ export const api = {
   createStack: (data) => request("/stack", { method: "POST", body: data }),
   updateStack: (id, data) => request(`/stack/${id}`, { method: "PATCH", body: data }),
   deleteStack: (id) => request(`/stack/${id}`, { method: "DELETE" }),
+  // Costs
+  listCosts: () => request("/costs"),
+  createCost: (data) => request("/costs", { method: "POST", body: data }),
+  deleteCost: (id) => request(`/costs/${id}`, { method: "DELETE" }),
+  costsSummary: () => request("/costs/summary"),
 };

@@ -18,6 +18,7 @@ import PaymentCancel from "@/pages/PaymentCancel";
 import Pricing from "@/pages/Pricing";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import MyStack from "@/pages/MyStack";
+import CostCenter from "@/pages/CostCenter";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 
@@ -85,6 +86,16 @@ function AppRouter() {
           <ProtectedRoute>
             <LockedGate>
               <MyStack />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/costs"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <CostCenter />
             </LockedGate>
           </ProtectedRoute>
         }
