@@ -82,4 +82,9 @@ export const api = {
   billingPortal: (origin_url) =>
     request("/billing/portal", { method: "POST", body: { origin_url } }),
   paymentStatus: (session_id) => request(`/payments/status/${session_id}`),
+  // Stack
+  listStack: () => request("/stack"),
+  createStack: (data) => request("/stack", { method: "POST", body: data }),
+  updateStack: (id, data) => request(`/stack/${id}`, { method: "PATCH", body: data }),
+  deleteStack: (id) => request(`/stack/${id}`, { method: "DELETE" }),
 };

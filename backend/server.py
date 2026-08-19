@@ -1421,6 +1421,122 @@ async def top_movers(
 
 
 
+# ---------- My Stack (infrastructure catalog) ----------
+STACK_CATEGORIES = [
+    "ai", "code", "frontend", "backend", "database", "hosting",
+    "auth", "payments", "email", "analytics", "monitoring", "domains", "storage",
+]
+
+class StackServiceIn(BaseModel):
+    name: str
+    category: str
+    provider: Optional[str] = None
+    plan: Optional[str] = None
+    owner: Optional[str] = None
+    account_url: Optional[str] = None
+    cost: Optional[float] = None
+    billing_interval: Optional[str] = None  # "monthly" | "annual" | "one_time" | "usage"
+    renewal_date: Optional[str] = None
+    active: bool = True
+    notes: Optional[str] = None
+    project_ids: List[str] = []  # linked projects
+
+class StackServiceOut(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    category: str
+    provider: Optional[str] = None
+    plan: Optional[str] = None
+    owner: Optional[str] = None
+    account_url: Optional[str] = None
+    cost: Optional[float] = None
+    billing_interval: Optional[str] = None
+    renewal_date: Optional[str] = None
+    active: bool = True
+    notes: Optional[str] = None
+    project_ids: List[str] = []
+    created_at: str
+    updated_at: str
+
+
+def _stack_out(doc: dict) -> StackServiceOut:
+    return StackServiceOut(
+        id=doc["id"], user_id=doc["user_id"], name=doc["name"],
+        category=doc["category"], provider=doc.get("provider"),
+        plan=doc.get("plan"), owner=doc.get("owner"),
+        account_url=doc.get("account_url"), cost=doc.get("cost"),
+        billing_interval=doc.get("billing_interval"),
+        renewal_date=doc.get("renewal_date"), active=doc.get("active", True),
+        notes=doc.get("notes"), project_ids=doc.get("project_ids", []),
+        created_at=doc.get("created_at", ""), updated_at=doc.get("updated_at", ""),
+    )
+
+
+@api.get("/stack", response_model=List[StackServiceOut])
+async def list_stack_services(user: dict = Depends(get_current_user)):
+    cursor = db.stack_services.find({"user_id": user["user_id"]}, {"_id": 0}).sort("category", 1)
+    return [_stack_out(s) async for s in cursor]
+
+
+@api.post("/stack", response_model=StackServiceOut)
+async def create_stack_service(payload: StackServiceIn, user: dict = Depends(get_current_user)):
+    if payload.category not in STACK_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(STACK_CATEGORIES)}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": f"stack_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "name": payload.name.strip(),
+        "category": payload.category,
+        "provider": payload.provider,
+        "plan": payload.plan,
+        "owner": payload.owner,
+        "account_url": payload.account_url,
+        "cost": payload.cost,
+        "billing_interval": payload.billing_interval,
+        "renewal_date": payload.renewal_date,
+        "active": payload.active,
+        "notes": payload.notes,
+        "project_ids": payload.project_ids,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.stack_services.insert_one(doc)
+    return _stack_out(doc)
+
+
+@api.patch("/stack/{service_id}", response_model=StackServiceOut)
+async def update_stack_service(service_id: str, payload: StackServiceIn, user: dict = Depends(get_current_user)):
+    doc = await db.stack_services.find_one({"id": service_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Stack service not found")
+    if payload.category not in STACK_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Invalid category")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.stack_services.update_one(
+        {"id": service_id, "user_id": user["user_id"]},
+        {"$set": {
+            "name": payload.name.strip(), "category": payload.category,
+            "provider": payload.provider, "plan": payload.plan, "owner": payload.owner,
+            "account_url": payload.account_url, "cost": payload.cost,
+            "billing_interval": payload.billing_interval, "renewal_date": payload.renewal_date,
+            "active": payload.active, "notes": payload.notes, "project_ids": payload.project_ids,
+            "updated_at": now_iso,
+        }},
+    )
+    updated = await db.stack_services.find_one({"id": service_id}, {"_id": 0})
+    return _stack_out(updated)
+
+
+@api.delete("/stack/{service_id}")
+async def delete_stack_service(service_id: str, user: dict = Depends(get_current_user)):
+    result = await db.stack_services.delete_many({"id": service_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Stack service not found")
+    return {"ok": True}
+
+
 # ---------- Billing (Stripe subscription) ----------
 class BillingCheckoutIn(BaseModel):
     origin_url: str
