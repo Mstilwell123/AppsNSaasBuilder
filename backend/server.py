@@ -152,6 +152,36 @@ PLANS = {
 TRIAL_PLAN_KEY = "solo"
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "7"))
 
+# ---------------------------------------------------------------------------
+# Readiness Engine — 8 weighted dimensions replacing the single 0-100 score.
+# Each dimension is 0-100. Overall readiness = weighted sum.
+# Existing scores are preserved as "legacy" — old projects show the old score
+# until they're re-scanned, at which point they get dimension data.
+# ---------------------------------------------------------------------------
+READINESS_DIMENSIONS = {
+    "product":       {"label": "Product Definition", "weight": 10},
+    "architecture":  {"label": "Architecture",         "weight": 10},
+    "build":         {"label": "Core Build",          "weight": 25},
+    "security":      {"label": "Security",            "weight": 15},
+    "qa":            {"label": "QA",                  "weight": 15},
+    "deployment":    {"label": "Deployment",          "weight": 10},
+    "business":      {"label": "Business",            "weight": 10},
+    "launch":        {"label": "Launch",              "weight": 5},
+}
+READINESS_DIM_KEYS = list(READINESS_DIMENSIONS.keys())
+
+def _calc_overall_readiness(dimensions: dict) -> int:
+    """Weighted sum of dimension scores → 0-100 overall readiness."""
+    if not dimensions:
+        return 0
+    total_weight = sum(d["weight"] for d in READINESS_DIMENSIONS.values())
+    weighted = 0
+    for key, meta in READINESS_DIMENSIONS.items():
+        val = dimensions.get(key)
+        if val is not None:
+            weighted += int(val) * meta["weight"]
+    return round(weighted / total_weight) if total_weight else 0
+
 EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 SESSION_TTL_DAYS = 7
 MIN_PASSWORD_LENGTH = 8
@@ -246,6 +276,15 @@ class ScoreOut(BaseModel):
     rationale: str
     model: str
     scored_at: str
+    dimensions: Dict[str, int] = {}  # readiness dimensions (empty for legacy scores)
+
+
+class ReadinessOut(BaseModel):
+    """Multi-dimensional readiness scores for a project."""
+    overall: int = 0  # weighted sum of dimensions
+    dimensions: Dict[str, int] = {}  # {product: 45, architecture: 60, ...}
+    labels: Dict[str, str] = {}  # {product: "Product Definition", ...} — for display
+    weights: Dict[str, int] = {}  # {product: 10, architecture: 10, ...}
 
 
 class ProjectOut(BaseModel):
@@ -267,6 +306,7 @@ class ProjectOut(BaseModel):
     one_line_summary: Optional[str] = None
     added_at: str
     latest_score: Optional[ScoreOut] = None
+    readiness: Optional[ReadinessOut] = None  # multi-dimensional scores (None for unscanned/legacy)
     next_steps: List[NextStepOut] = []
     completion: int = 0  # 0..100 weighted % of next_steps done
     streak: int = 0  # consecutive scans where score strictly increased vs the prior one
@@ -768,13 +808,24 @@ async def _project_to_out(proj: dict) -> ProjectOut:
         {"project_id": proj["id"]}, {"_id": 0}, sort=[("scored_at", -1)],
     )
     latest = None
+    readiness = None
     if latest_score_doc:
+        dims = latest_score_doc.get("dimensions") or {}
         latest = ScoreOut(
             score=int(latest_score_doc["score"]),
             rationale=latest_score_doc.get("rationale", ""),
             model=latest_score_doc.get("model", ""),
             scored_at=latest_score_doc.get("scored_at", ""),
+            dimensions=dims,
         )
+        # Build readiness output if we have dimension data.
+        if dims:
+            readiness = ReadinessOut(
+                overall=_calc_overall_readiness(dims),
+                dimensions=dims,
+                labels={k: v["label"] for k, v in READINESS_DIMENSIONS.items()},
+                weights={k: v["weight"] for k, v in READINESS_DIMENSIONS.items()},
+            )
     # Streak: count consecutive strictly-increasing scores walking back from the newest.
     recent_scores = await db.scores.find(
         {"project_id": proj["id"]}, {"_id": 0, "score": 1, "scored_at": 1},
@@ -804,6 +855,7 @@ async def _project_to_out(proj: dict) -> ProjectOut:
         one_line_summary=proj.get("one_line_summary"),
         added_at=proj.get("added_at", ""),
         latest_score=latest,
+        readiness=readiness,
         next_steps=[_next_step_out(s) for s in steps],
         completion=_weighted_completion(steps),
         streak=streak,
@@ -861,6 +913,16 @@ async def _score_with_llm(signals: dict) -> dict:
         "schema, no prose, no markdown fences:\n"
         "{\n"
         '  "score": <int 0-100 — holistic completeness score>,\n'
+        '  "dimensions": {\n'
+        '    "product":      <int 0-100 — is the product defined? README, description, clear purpose>,\n'
+        '    "architecture":  <int 0-100 — is the architecture sound? languages, structure, CI>,\n'
+        '    "build":        <int 0-100 — is the core build progressing? commit activity, recency>,\n'
+        '    "security":     <int 0-100 — security posture: license, no secrets exposed, deps>,\n'
+        '    "qa":           <int 0-100 — testing & quality: CI presence, issue backlog>,\n'
+        '    "deployment":   <int 0-100 — deployment readiness: homepage, live URL, env>,\n'
+        '    "business":     <int 0-100 — business readiness: description quality, monetization signals>,\n'
+        '    "launch":       <int 0-100 — launch readiness: docs, license, production signals>\n'
+        "  },\n"
         '  "one_line_summary": <string, <=100 chars, plain, no marketing fluff>,\n'
         '  "rationale": <string, 2-4 sentences citing specific signals like commit activity, CI, README, homepage, issues>,\n'
         '  "next_steps": [ {"text": <short imperative>, "weight": <int 1-5>, "order": <int, 1-indexed>} ]\n'
@@ -869,7 +931,8 @@ async def _score_with_llm(signals: dict) -> dict:
         "Weight reflects impact-on-completeness (5 = huge lift, 1 = polish). "
         "Signal-to-score guidance: recent commit activity, CI configured, README present, "
         "homepage URL set, low open-issue debt, and license all raise the score. Archived or "
-        "no-commits-in-12-weeks pushes it down."
+        "no-commits-in-12-weeks pushes it down. Score each dimension independently — "
+        "a project can have strong build activity (high build score) but no tests (low QA score)."
     )
     prompt = "Project signals:\n" + json.dumps(payload, indent=2) + "\nReturn the JSON object now."
     try:
@@ -887,6 +950,14 @@ async def _score_with_llm(signals: dict) -> dict:
         raise HTTPException(status_code=502, detail="Scoring model returned invalid JSON") from exc
     # Sanity clamp.
     result["score"] = max(0, min(100, int(result.get("score", 0))))
+    # Clamp and normalize dimension scores.
+    raw_dims = result.get("dimensions") or {}
+    dimensions = {}
+    for key in READINESS_DIM_KEYS:
+        val = raw_dims.get(key)
+        if val is not None:
+            dimensions[key] = max(0, min(100, int(val)))
+    result["dimensions"] = dimensions if dimensions else {}
     # Stamp the provider + model so score history is comparable across migrations.
     provider = _get_provider()
     result["model"] = f"{provider.provider_name}:{provider.model_id}"
@@ -1162,6 +1233,7 @@ async def _run_scan(project_id: str, user_id: str, scan_id: str) -> None:
             "score": int(ai.get("score", 0)),
             "rationale": ai.get("rationale", ""),
             "model": ai.get("model", SCORING_MODEL),
+            "dimensions": ai.get("dimensions", {}),
             "scored_at": datetime.now(timezone.utc).isoformat(),
         })
         old_steps = [s async for s in db.next_steps.find(
@@ -1726,6 +1798,7 @@ class ScoreHistoryOut(BaseModel):
     score: int
     scored_at: str
     rationale: Optional[str] = None
+    dimensions: Dict[str, int] = {}
 
 
 @api.get("/projects/{project_id}/scores", response_model=List[ScoreHistoryOut])
@@ -1737,7 +1810,8 @@ async def score_history(project_id: str, limit: int = 20, user: dict = Depends(g
     ).sort("scored_at", -1).to_list(length=limit)
     docs.reverse()  # chronological for charts
     return [ScoreHistoryOut(
-        score=int(d["score"]), scored_at=d.get("scored_at", ""), rationale=d.get("rationale"),
+        score=int(d["score"]), scored_at=d.get("scored_at", ""),
+        rationale=d.get("rationale"), dimensions=d.get("dimensions") or {},
     ) for d in docs]
 
 
@@ -1984,6 +2058,7 @@ async def _job_rescan_stale_projects() -> None:
                 "score": int(ai.get("score", 0)),
                 "rationale": ai.get("rationale", ""),
                 "model": ai.get("model", SCORING_MODEL),
+                "dimensions": ai.get("dimensions", {}),
                 "scored_at": now_iso,
             })
             # Preserve done-flags and completed_at for identically-worded steps (F3).

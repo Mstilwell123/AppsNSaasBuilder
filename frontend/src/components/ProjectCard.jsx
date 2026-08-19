@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import Sparkline from "@/components/Sparkline";
+import ReadinessBar from "@/components/ReadinessBar";
 import { ExternalLink, GitBranch, Star, CircleDot, Flame } from "lucide-react";
 
 function LanguagePills({ languages = {}, max = 3 }) {
@@ -126,6 +127,11 @@ export default function ProjectCard({ project }) {
       </div>
 
       <div className="mt-4 pt-4 border-t border-border">
+        {project.readiness && (
+          <div className="mb-3" data-testid={`project-card-readiness-${project.id}`}>
+            <ReadinessBar readiness={project.readiness} compact />
+          </div>
+        )}
         <LanguagePills languages={project.languages || {}} />
       </div>
     </div>

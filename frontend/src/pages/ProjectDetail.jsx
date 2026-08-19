@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import Sparkline from "@/components/Sparkline";
+import ReadinessBar from "@/components/ReadinessBar";
 import ScoreHistoryChart from "@/components/ScoreHistoryChart";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -273,6 +274,33 @@ export default function ProjectDetail() {
 
         <Card
           className="md:col-span-4 bg-card border border-border rounded-sm p-8"
+          data-testid="project-detail-readiness-card"
+        >
+          <div className="flex items-baseline justify-between mb-4">
+            <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+              Readiness dimensions
+            </p>
+            <p
+              className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
+              data-testid="project-detail-readiness-overall"
+            >
+              {project.readiness ? `${project.readiness.overall}/100` : "—"}
+            </p>
+          </div>
+          {project.readiness && project.readiness.dimensions ? (
+            <DimensionBreakdown readiness={project.readiness} />
+          ) : (
+            <p
+              data-testid="project-detail-readiness-empty"
+              className="text-xs text-muted-foreground"
+            >
+              Run a scan to generate readiness dimensions.
+            </p>
+          )}
+        </Card>
+
+        <Card
+          className="md:col-span-4 bg-card border border-border rounded-sm p-8"
           data-testid="project-detail-score-history-card"
         >
           <div className="flex items-baseline justify-between mb-4">
@@ -402,6 +430,52 @@ function StatCell({ label, value, icon }) {
         {icon}
         {value ?? 0}
       </p>
+    </div>
+  );
+}
+
+const DIM_ORDER = [
+  { key: "product", label: "Product Definition", weight: 10 },
+  { key: "architecture", label: "Architecture", weight: 10 },
+  { key: "build", label: "Core Build", weight: 25 },
+  { key: "security", label: "Security", weight: 15 },
+  { key: "qa", label: "QA", weight: 15 },
+  { key: "deployment", label: "Deployment", weight: 10 },
+  { key: "business", label: "Business", weight: 10 },
+  { key: "launch", label: "Launch", weight: 5 },
+];
+
+function DimensionBreakdown({ readiness }) {
+  const dims = readiness.dimensions || {};
+  return (
+    <div className="space-y-3" data-testid="dimension-breakdown">
+      {DIM_ORDER.map(({ key, label, weight }) => {
+        const val = dims[key] ?? 0;
+        const pct = Math.max(0, Math.min(100, val));
+        return (
+          <div key={key} data-testid={`dim-row-${key}`}>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs text-muted-foreground">
+                {label}
+                <span className="text-muted-foreground/50 ml-2">({weight}%)</span>
+              </p>
+              <p
+                className="text-xs font-medium"
+                data-testid={`dim-value-${key}`}
+              >
+                {val}
+              </p>
+            </div>
+            <div className="h-1.5 w-full bg-secondary rounded-sm overflow-hidden">
+              <div
+                className="h-full bg-foreground/80 transition-[width] duration-300"
+                style={{ width: `${pct}%` }}
+                data-testid={`dim-bar-${key}`}
+              />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -57,6 +57,14 @@ export default function Dashboard() {
     );
   })();
 
+  const avgReadiness = (() => {
+    const ready = projects.filter((p) => p.readiness?.overall != null);
+    if (ready.length === 0) return null;
+    return Math.round(
+      ready.reduce((a, p) => a + p.readiness.overall, 0) / ready.length,
+    );
+  })();
+
   return (
     <AppShell active="dashboard">
       <div className="flex items-start justify-between gap-6 flex-wrap mb-10">
@@ -79,12 +87,26 @@ export default function Dashboard() {
               <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                 Portfolio avg
               </p>
-              <p
-                data-testid="dashboard-portfolio-avg"
-                className="font-display text-3xl tracking-tight leading-none mt-1"
-              >
-                {typeof avgScore === "number" ? avgScore : "—"}
-              </p>
+              <div className="flex items-center gap-4 mt-1">
+                {typeof avgReadiness === "number" && (
+                  <div data-testid="dashboard-readiness-avg">
+                    <p className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                      Readiness
+                    </p>
+                    <p className="font-display text-3xl tracking-tight leading-none">
+                      {avgReadiness}
+                    </p>
+                  </div>
+                )}
+                <div data-testid="dashboard-portfolio-avg">
+                  <p className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                    Score
+                  </p>
+                  <p className="font-display text-3xl tracking-tight leading-none">
+                    {typeof avgScore === "number" ? avgScore : "—"}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
           {connected && (
