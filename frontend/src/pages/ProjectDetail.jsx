@@ -384,9 +384,27 @@ export default function ProjectDetail() {
                     >
                       {step.text}
                     </p>
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground mt-1">
-                      Weight {step.weight}
-                    </p>
+                    <div className="flex items-center gap-3 mt-1 flex-wrap">
+                      <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                        Weight {step.weight}
+                      </p>
+                      {step.readiness_impact != null && (
+                        <span
+                          data-testid={`next-step-impact-${step.id}`}
+                          className="text-[10px] uppercase tracking-[0.14em] text-emerald-300/80"
+                        >
+                          +{step.readiness_impact} readiness
+                        </span>
+                      )}
+                      {step.recommended_skill && (
+                        <span
+                          data-testid={`next-step-skill-${step.id}`}
+                          className="text-[10px] uppercase tracking-[0.14em] border border-border px-1.5 py-0.5 rounded-sm bg-secondary/50 text-muted-foreground"
+                        >
+                          {step.recommended_skill}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </li>
               ))}

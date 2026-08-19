@@ -269,6 +269,8 @@ class NextStepOut(BaseModel):
     weight: int
     done: bool
     order: int
+    recommended_skill: Optional[str] = None  # e.g. "Authentication Audit", "Security Audit"
+    readiness_impact: Optional[int] = None  # e.g. +6 (estimated readiness points if done)
 
 
 class ScoreOut(BaseModel):
@@ -798,6 +800,8 @@ def _next_step_out(doc: dict) -> NextStepOut:
     return NextStepOut(
         id=doc["id"], text=doc["text"], weight=int(doc.get("weight", 1)),
         done=bool(doc.get("done", False)), order=int(doc.get("order", 0)),
+        recommended_skill=doc.get("recommended_skill"),
+        readiness_impact=doc.get("readiness_impact"),
     )
 
 
@@ -925,7 +929,7 @@ async def _score_with_llm(signals: dict) -> dict:
         "  },\n"
         '  "one_line_summary": <string, <=100 chars, plain, no marketing fluff>,\n'
         '  "rationale": <string, 2-4 sentences citing specific signals like commit activity, CI, README, homepage, issues>,\n'
-        '  "next_steps": [ {"text": <short imperative>, "weight": <int 1-5>, "order": <int, 1-indexed>} ]\n'
+        '  "next_steps": [ {"text": <short imperative>, "weight": <int 1-5>, "order": <int, 1-indexed>, "recommended_skill": <string or null — a Hermes skill name like "Security Audit", "Authentication Audit", "PRD Architect", "Deployment Agent", "QA Agent">, "readiness_impact": <int 1-15 — estimated readiness points gained if done>} ]\n'
         "}\n"
         "next_steps must contain 3 to 6 items, prioritized (order=1 is most impactful). "
         "Weight reflects impact-on-completeness (5 = huge lift, 1 = polish). "
@@ -970,6 +974,8 @@ async def _score_with_llm(signals: dict) -> dict:
             "text": str(s.get("text", "")).strip()[:200],
             "weight": max(1, min(5, int(s.get("weight", 1)))),
             "order": int(s.get("order", i + 1)),
+            "recommended_skill": str(s.get("recommended_skill")).strip() or None if s.get("recommended_skill") else None,
+            "readiness_impact": max(1, min(15, int(s.get("readiness_impact", 0)))) or None,
         }
         for i, s in enumerate(steps)
         if str(s.get("text", "")).strip()
@@ -1259,6 +1265,8 @@ async def _run_scan(project_id: str, user_id: str, scan_id: str) -> None:
                 "order": step.get("order", i),
                 "done": is_done,
                 "completed_at": completed_at_map.get(key) if is_done else None,
+                "recommended_skill": step.get("recommended_skill"),
+                "readiness_impact": step.get("readiness_impact"),
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
         if new_docs:
@@ -2084,6 +2092,8 @@ async def _job_rescan_stale_projects() -> None:
                     "weight": step["weight"],
                     "order": step.get("order", i),
                     "done": is_done,
+                    "recommended_skill": step.get("recommended_skill"),
+                    "readiness_impact": step.get("readiness_impact"),
                     "completed_at": completed_at_map.get(key) if is_done else None,
                     "created_at": now_iso,
                 })
