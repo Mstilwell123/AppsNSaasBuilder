@@ -120,4 +120,6 @@ export const api = {
   createIdea: (data) => request("/ideas", { method: "POST", body: data }),
   deleteIdea: (id) => request(`/ideas/${id}`, { method: "DELETE" }),
   promoteIdea: (id) => request(`/ideas/${id}/promote`, { method: "POST" }),
+  // Business metrics
+  businessMetrics: () => request("/business/metrics"),
 };

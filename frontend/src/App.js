@@ -25,6 +25,7 @@ import EvidenceCenter from "@/pages/EvidenceCenter";
 import LaunchCenter from "@/pages/LaunchCenter";
 import SkillsCenter from "@/pages/SkillsCenter";
 import IdeaPipeline from "@/pages/IdeaPipeline";
+import BusinessCenter from "@/pages/BusinessCenter";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 
@@ -172,6 +173,16 @@ function AppRouter() {
           <ProtectedRoute>
             <LockedGate>
               <IdeaPipeline />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/business"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <BusinessCenter />
             </LockedGate>
           </ProtectedRoute>
         }

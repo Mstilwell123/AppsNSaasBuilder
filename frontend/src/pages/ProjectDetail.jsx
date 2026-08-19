@@ -215,6 +215,26 @@ export default function ProjectDetail() {
         </div>
       </div>
 
+      {/* Sub-page links */}
+      <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="project-detail-sub-links">
+        <Link to={`/projects/${id}/ownership`} data-testid="project-detail-link-ownership"
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          Ownership
+        </Link>
+        <Link to={`/projects/${id}/documents`} data-testid="project-detail-link-documents"
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          PRD & Docs
+        </Link>
+        <Link to={`/projects/${id}/evidence`} data-testid="project-detail-link-evidence"
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          QA & Security
+        </Link>
+        <Link to={`/projects/${id}/launch`} data-testid="project-detail-link-launch"
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          Launch
+        </Link>
+      </div>
+
       <div className="mt-10 grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card className="md:col-span-2 bg-card border border-border rounded-sm p-8">
           <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Score</p>

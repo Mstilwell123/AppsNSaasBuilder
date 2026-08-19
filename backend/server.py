@@ -2015,6 +2015,79 @@ async def list_skills():
     return {"skills": SKILLS_CATALOG}
 
 
+# ---------- Business Center (MRR, customers, ARPU from Stripe) ----------
+@api.get("/business/metrics")
+async def business_metrics(user: dict = Depends(get_current_user)):
+    """Compute MRR, customers, ARPU from Stripe subscription data.
+
+    If Stripe is not configured or has no data, returns zeros with
+    'NOT CONNECTED' states — never fabricated metrics.
+    """
+    # Get all billing records for this user
+    billing = await db.billing.find_one({"user_id": user["user_id"]}, {"_id": 0})
+
+    # Get all payment transactions (for customer count)
+    all_billing = [b async for b in db.billing.find({}, {"_id": 0})]
+
+    # Count active subscriptions across all users (if admin) or just this user
+    active_subs = [b for b in all_billing if (b.get("subscription_status") or "").lower() in ("active", "trialing")]
+
+    # Calculate MRR: sum of monthly subscription amounts
+    mrr = 0.0
+    customers = set()
+    for b in active_subs:
+        plan_key = b.get("plan_key") or "solo"
+        plan_meta = PLANS.get(plan_key, PLANS.get("solo", {}))
+        price_cents = plan_meta.get("price_cents") or 0
+        mrr += price_cents / 100.0
+        if b.get("user_id"):
+            customers.add(b["user_id"])
+
+    # Count trial users (not yet paying)
+    trial_count = 0
+    async for u in db.users.find({}, {"user_id": 1, "trial_ends_at": 1, "locked_at": 1}):
+        trial_ends = u.get("trial_ends_at")
+        if trial_ends:
+            try:
+                end = datetime.fromisoformat(trial_ends)
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                if end > datetime.now(timezone.utc) and not u.get("locked_at"):
+                    trial_count += 1
+            except Exception:
+                pass
+
+    customer_count = len(customers)
+    arpu = round(mrr / customer_count, 2) if customer_count > 0 else 0.0
+
+    # Get software costs for margin calculation
+    costs = [c async for c in db.costs.find({"user_id": user["user_id"]}, {"_id": 0})]
+    monthly_software_cost = 0.0
+    for c in costs:
+        amount = float(c.get("amount", 0))
+        if c.get("period") == "monthly":
+            monthly_software_cost += amount
+        elif c.get("period") == "annual":
+            monthly_software_cost += amount / 12
+
+    gross_margin_pct = round(((mrr - monthly_software_cost) / mrr) * 100, 1) if mrr > 0 else 0
+
+    # Canceled subs
+    canceled = [b for b in all_billing if (b.get("subscription_status") or "").lower() == "canceled"]
+    churn_count = len(canceled)
+
+    return {
+        "mrr": round(mrr, 2),
+        "customers": customer_count,
+        "arpu": arpu,
+        "trial_users": trial_count,
+        "monthly_software_cost": round(monthly_software_cost, 2),
+        "gross_margin_pct": gross_margin_pct,
+        "churn_count": churn_count,
+        "stripe_connected": bool(billing and billing.get("customer_id")),
+    }
+
+
 # ---------- Idea Pipeline ----------
 class IdeaIn(BaseModel):
     title: str
