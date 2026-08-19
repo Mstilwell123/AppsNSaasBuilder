@@ -92,4 +92,32 @@ export const api = {
   createCost: (data) => request("/costs", { method: "POST", body: data }),
   deleteCost: (id) => request(`/costs/${id}`, { method: "DELETE" }),
   costsSummary: () => request("/costs/summary"),
+  // Ownership
+  listOwnership: (projectId) => request(`/ownership/${projectId}`),
+  setOwnership: (data) => request("/ownership", { method: "POST", body: data }),
+  ownershipScore: (projectId) => request(`/ownership/${projectId}/score`),
+  // Documents
+  listDocuments: (projectId) => request(`/documents/${projectId}`),
+  createDocument: (data) => request("/documents", { method: "POST", body: data }),
+  updateDocument: (id, data) => request(`/documents/${id}`, { method: "PATCH", body: data }),
+  deleteDocument: (id) => request(`/documents/${id}`, { method: "DELETE" }),
+  // Decisions
+  listDecisions: (projectId) => request(`/decisions/${projectId}`),
+  createDecision: (data) => request("/decisions", { method: "POST", body: data }),
+  deleteDecision: (id) => request(`/decisions/${id}`, { method: "DELETE" }),
+  // Evidence
+  listEvidence: (projectId) => request(`/evidence/${projectId}`),
+  createEvidence: (data) => request("/evidence", { method: "POST", body: data }),
+  deleteEvidence: (id) => request(`/evidence/${id}`, { method: "DELETE" }),
+  // Launch checklist
+  getLaunchChecklist: (projectId) => request(`/launch/${projectId}`),
+  toggleLaunchItem: (projectId, itemId, done) =>
+    request(`/launch/${projectId}/${itemId}`, { method: "PATCH", body: { done } }),
+  // Skills
+  listSkills: () => request("/skills"),
+  // Ideas
+  listIdeas: () => request("/ideas"),
+  createIdea: (data) => request("/ideas", { method: "POST", body: data }),
+  deleteIdea: (id) => request(`/ideas/${id}`, { method: "DELETE" }),
+  promoteIdea: (id) => request(`/ideas/${id}/promote`, { method: "POST" }),
 };

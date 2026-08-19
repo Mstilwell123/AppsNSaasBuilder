@@ -1670,6 +1670,397 @@ async def costs_summary(user: dict = Depends(get_current_user)):
     }
 
 
+# ---------- Ownership Center ----------
+OWNERSHIP_ASSETS = [
+    "repository", "source", "domain", "database", "hosting",
+    "stripe", "apis", "backups", "secrets", "documentation",
+]
+
+class OwnershipIn(BaseModel):
+    project_id: str
+    asset: str  # one of OWNERSHIP_ASSETS
+    status: str = "not_verified"  # "owned" | "not_owned" | "not_verified"
+    owner: Optional[str] = None  # who owns it (e.g. "Me", "Agency")
+    account_url: Optional[str] = None
+    notes: Optional[str] = None
+
+class OwnershipOut(BaseModel):
+    id: str
+    user_id: str
+    project_id: str
+    asset: str
+    status: str
+    owner: Optional[str] = None
+    account_url: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+def _ownership_out(doc: dict) -> OwnershipOut:
+    return OwnershipOut(
+        id=doc["id"], user_id=doc["user_id"], project_id=doc["project_id"],
+        asset=doc["asset"], status=doc.get("status", "not_verified"),
+        owner=doc.get("owner"), account_url=doc.get("account_url"),
+        notes=doc.get("notes"), created_at=doc.get("created_at", ""),
+        updated_at=doc.get("updated_at", ""),
+    )
+
+def _calc_ownership_score(records: list) -> dict:
+    """Calculate ownership score: percentage of critical assets owned."""
+    if not records:
+        return {"score": 0, "owned": 0, "total": len(OWNERSHIP_ASSETS), "not_verified": len(OWNERSHIP_ASSETS)}
+    owned = sum(1 for r in records if r.get("status") == "owned")
+    not_verified = sum(1 for r in records if r.get("status") == "not_verified")
+    total = len(OWNERSHIP_ASSETS)
+    score = round(100 * owned / total) if total else 0
+    return {"score": score, "owned": owned, "total": total, "not_verified": not_verified}
+
+@api.get("/ownership/{project_id}", response_model=List[OwnershipOut])
+async def list_ownership(project_id: str, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    cursor = db.ownership.find(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}
+    ).sort("asset", 1)
+    return [_ownership_out(r) async for r in cursor]
+
+@api.post("/ownership", response_model=OwnershipOut)
+async def set_ownership(payload: OwnershipIn, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(payload.project_id, user["user_id"])
+    if payload.asset not in OWNERSHIP_ASSETS:
+        raise HTTPException(status_code=400, detail=f"Invalid asset. Must be one of: {', '.join(OWNERSHIP_ASSETS)}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.ownership.update_one(
+        {"project_id": payload.project_id, "user_id": user["user_id"], "asset": payload.asset},
+        {"$set": {
+            "status": payload.status, "owner": payload.owner,
+            "account_url": payload.account_url, "notes": payload.notes,
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+    doc = await db.ownership.find_one(
+        {"project_id": payload.project_id, "user_id": user["user_id"], "asset": payload.asset},
+        {"_id": 0},
+    )
+    if not doc.get("id"):
+        # First time — assign an id
+        oid = f"own_{uuid.uuid4().hex[:10]}"
+        await db.ownership.update_one(
+            {"project_id": payload.project_id, "user_id": user["user_id"], "asset": payload.asset},
+            {"$set": {"id": oid, "created_at": now_iso}},
+        )
+        doc["id"] = oid
+        doc["created_at"] = now_iso
+    return _ownership_out(doc)
+
+@api.get("/ownership/{project_id}/score")
+async def ownership_score(project_id: str, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    records = [r async for r in db.ownership.find(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}
+    )]
+    score = _calc_ownership_score(records)
+    return {
+        "project_id": project_id,
+        "score": score["score"],
+        "owned": score["owned"],
+        "total": score["total"],
+        "not_verified": score["not_verified"],
+        "assets": OWNERSHIP_ASSETS,
+    }
+
+
+# ---------- PRD & Documents ----------
+DOC_TYPES = ["prd", "architecture", "security", "qa", "deployment", "changelog", "readme"]
+
+class DocumentIn(BaseModel):
+    project_id: str
+    doc_type: str  # one of DOC_TYPES
+    content: str = ""
+    version: Optional[str] = None
+
+class DocumentOut(BaseModel):
+    id: str
+    user_id: str
+    project_id: str
+    doc_type: str
+    content: str
+    version: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+def _doc_out(doc: dict) -> DocumentOut:
+    return DocumentOut(
+        id=doc["id"], user_id=doc["user_id"], project_id=doc["project_id"],
+        doc_type=doc["doc_type"], content=doc.get("content", ""),
+        version=doc.get("version"), created_at=doc.get("created_at", ""),
+        updated_at=doc.get("updated_at", ""),
+    )
+
+@api.get("/documents/{project_id}", response_model=List[DocumentOut])
+async def list_documents(project_id: str, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    cursor = db.documents.find({"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}).sort("doc_type", 1)
+    return [_doc_out(d) async for d in cursor]
+
+@api.post("/documents", response_model=DocumentOut)
+async def create_document(payload: DocumentIn, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(payload.project_id, user["user_id"])
+    if payload.doc_type not in DOC_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid doc type")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": f"doc_{uuid.uuid4().hex[:10]}", "user_id": user["user_id"],
+        "project_id": payload.project_id, "doc_type": payload.doc_type,
+        "content": payload.content, "version": payload.version,
+        "created_at": now_iso, "updated_at": now_iso,
+    }
+    await db.documents.insert_one(doc)
+    return _doc_out(doc)
+
+@api.patch("/documents/{doc_id}", response_model=DocumentOut)
+async def update_document(doc_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    doc = await db.documents.find_one({"id": doc_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    update = {}
+    if "content" in payload: update["content"] = payload["content"]
+    if "version" in payload: update["version"] = payload["version"]
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.documents.update_one({"id": doc_id, "user_id": user["user_id"]}, {"$set": update})
+    updated = await db.documents.find_one({"id": doc_id}, {"_id": 0})
+    return _doc_out(updated)
+
+@api.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str, user: dict = Depends(get_current_user)):
+    result = await db.documents.delete_many({"id": doc_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"ok": True}
+
+
+# ---------- Decision Log ----------
+class DecisionIn(BaseModel):
+    project_id: str
+    title: str
+    decision: str
+    rationale: Optional[str] = None
+
+class DecisionOut(BaseModel):
+    id: str
+    user_id: str
+    project_id: str
+    title: str
+    decision: str
+    rationale: Optional[str] = None
+    created_at: str
+
+@api.get("/decisions/{project_id}", response_model=List[DecisionOut])
+async def list_decisions(project_id: str, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    cursor = db.decisions.find({"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
+    return [DecisionOut(**d, id=d["id"]) async for d in cursor]
+
+@api.post("/decisions", response_model=DecisionOut)
+async def create_decision(payload: DecisionIn, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(payload.project_id, user["user_id"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": f"dec_{uuid.uuid4().hex[:10]}", "user_id": user["user_id"],
+        "project_id": payload.project_id, "title": payload.title,
+        "decision": payload.decision, "rationale": payload.rationale,
+        "created_at": now_iso,
+    }
+    await db.decisions.insert_one(doc)
+    return DecisionOut(**doc)
+
+@api.delete("/decisions/{decision_id}")
+async def delete_decision(decision_id: str, user: dict = Depends(get_current_user)):
+    result = await db.decisions.delete_many({"id": decision_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return {"ok": True}
+
+
+# ---------- QA & Security Evidence ----------
+EVIDENCE_CATEGORIES = ["qa", "security"]
+
+class EvidenceIn(BaseModel):
+    project_id: str
+    category: str  # "qa" | "security"
+    claim: str
+    status: str = "detected"  # "detected" | "verified" | "not_verified"
+    evidence: Optional[str] = None
+    source: Optional[str] = None
+
+class EvidenceOut(BaseModel):
+    id: str
+    user_id: str
+    project_id: str
+    category: str
+    claim: str
+    status: str
+    evidence: Optional[str] = None
+    source: Optional[str] = None
+    created_at: str
+    verified_at: Optional[str] = None
+
+@api.get("/evidence/{project_id}", response_model=List[EvidenceOut])
+async def list_evidence(project_id: str, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    cursor = db.evidence.find({"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}).sort("category", 1)
+    return [EvidenceOut(**d, id=d["id"]) async for d in cursor]
+
+@api.post("/evidence", response_model=EvidenceOut)
+async def create_evidence(payload: EvidenceIn, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(payload.project_id, user["user_id"])
+    if payload.category not in EVIDENCE_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Category must be 'qa' or 'security'")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": f"evd_{uuid.uuid4().hex[:10]}", "user_id": user["user_id"],
+        "project_id": payload.project_id, "category": payload.category,
+        "claim": payload.claim, "status": payload.status,
+        "evidence": payload.evidence, "source": payload.source,
+        "created_at": now_iso, "verified_at": now_iso if payload.status == "verified" else None,
+    }
+    await db.evidence.insert_one(doc)
+    return EvidenceOut(**doc)
+
+@api.delete("/evidence/{evidence_id}")
+async def delete_evidence(evidence_id: str, user: dict = Depends(get_current_user)):
+    result = await db.evidence.delete_many({"id": evidence_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    return {"ok": True}
+
+
+# ---------- Launch Center ----------
+LAUNCH_CHECKLIST_ITEMS = [
+    "domain_configured", "ssl_active", "production_env_set", "database_connected",
+    "env_vars_configured", "tests_passing", "ci_green", "monitoring_setup",
+    "error_tracking_setup", "backup_configured", "dns_propagated", "health_check_endpoint",
+]
+
+@api.get("/launch/{project_id}")
+async def get_launch_checklist(project_id: str, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    records = {r["item"]: r for r in await db.launch_checklist.find(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0}
+    ).to_list(length=50)}
+    items = []
+    for item_key in LAUNCH_CHECKLIST_ITEMS:
+        rec = records.get(item_key)
+        items.append({
+            "key": item_key,
+            "done": bool(rec.get("done")) if rec else False,
+            "label": item_key.replace("_", " ").title(),
+        })
+    completed = sum(1 for i in items if i["done"])
+    return {"project_id": project_id, "items": items, "completed": completed, "total": len(items),
+            "ready": completed == len(items)}
+
+@api.patch("/launch/{project_id}/{item_key}")
+async def toggle_launch_item(project_id: str, item_key: str, payload: dict, user: dict = Depends(get_current_user)):
+    await _ensure_own_project(project_id, user["user_id"])
+    if item_key not in LAUNCH_CHECKLIST_ITEMS:
+        raise HTTPException(status_code=400, detail="Invalid launch item")
+    done = bool(payload.get("done", False))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.launch_checklist.update_one(
+        {"project_id": project_id, "user_id": user["user_id"], "item": item_key},
+        {"$set": {"done": done, "updated_at": now_iso}, "$setOnInsert": {"created_at": now_iso}},
+        upsert=True,
+    )
+    return {"ok": True, "key": item_key, "done": done}
+
+
+# ---------- Hermes Skills Catalog ----------
+SKILLS_CATALOG = [
+    # Discovery
+    {"key": "market_gap_finder", "name": "Market Gap Finder", "category": "Discovery", "description": "Find unmet needs in a market segment."},
+    {"key": "idea_validator", "name": "Idea Validator", "category": "Discovery", "description": "Stress-test an idea before building."},
+    {"key": "competitive_research", "name": "Competitive Research", "category": "Discovery", "description": "Analyze competitors and positioning."},
+    {"key": "mvp_planner", "name": "MVP Planner", "category": "Discovery", "description": "Define the minimum viable product scope."},
+    # Product
+    {"key": "prd_architect", "name": "PRD Architect", "category": "Product", "description": "Draft a product requirements document."},
+    {"key": "user_journey_designer", "name": "User Journey Designer", "category": "Product", "description": "Map user flows and touchpoints."},
+    {"key": "feature_prioritizer", "name": "Feature Prioritizer", "category": "Product", "description": "Rank features by impact and effort."},
+    # Architecture
+    {"key": "app_architect", "name": "Application Architect", "category": "Architecture", "description": "Design the app's technical architecture."},
+    {"key": "database_architect", "name": "Database Architect", "category": "Architecture", "description": "Design the data model and schema."},
+    {"key": "security_architect", "name": "Security Architect", "category": "Architecture", "description": "Design the security model."},
+    # Build
+    {"key": "frontend_builder", "name": "Frontend Builder", "category": "Build", "description": "Build the frontend with React/Tailwind."},
+    {"key": "backend_builder", "name": "Backend Builder", "category": "Build", "description": "Build the backend API and services."},
+    {"key": "auth_builder", "name": "Authentication Builder", "category": "Build", "description": "Implement secure authentication."},
+    {"key": "stripe_builder", "name": "Stripe Builder", "category": "Build", "description": "Wire Stripe billing and subscriptions."},
+    # Quality
+    {"key": "code_reviewer", "name": "Code Reviewer", "category": "Quality", "description": "Review code for quality and bugs."},
+    {"key": "qa_agent", "name": "QA Agent", "category": "Quality", "description": "Run quality checks and report issues."},
+    {"key": "auth_audit", "name": "Authentication Audit", "category": "Quality", "description": "Verify auth is secure and complete."},
+    {"key": "security_audit", "name": "Security Audit", "category": "Quality", "description": "Audit security posture."},
+    # Launch
+    {"key": "deployment_agent", "name": "Deployment Agent", "category": "Launch", "description": "Deploy the app to production."},
+    {"key": "launch_audit", "name": "Launch Audit", "category": "Launch", "description": "Verify launch readiness."},
+    {"key": "seo_launch", "name": "SEO Launch", "category": "Launch", "description": "Set up SEO for launch."},
+    # Business
+    {"key": "saas_pricing", "name": "SaaS Pricing", "category": "Business", "description": "Determine optimal pricing strategy."},
+    {"key": "unit_economics", "name": "Unit Economics", "category": "Business", "description": "Calculate CAC, LTV, margins."},
+    {"key": "cost_optimizer", "name": "Cost Optimizer", "category": "Business", "description": "Find ways to reduce operating costs."},
+]
+
+@api.get("/skills")
+async def list_skills():
+    return {"skills": SKILLS_CATALOG}
+
+
+# ---------- Idea Pipeline ----------
+class IdeaIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+
+class IdeaOut(BaseModel):
+    id: str
+    user_id: str
+    title: str
+    description: Optional[str] = None
+    status: str = "idea"  # "idea" | "validating" | "validated" | "promoted" | "archived"
+    created_at: str
+
+@api.get("/ideas", response_model=List[IdeaOut])
+async def list_ideas(user: dict = Depends(get_current_user)):
+    cursor = db.ideas.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
+    return [IdeaOut(**d, id=d["id"]) async for d in cursor]
+
+@api.post("/ideas", response_model=IdeaOut)
+async def create_idea(payload: IdeaIn, user: dict = Depends(get_current_user)):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": f"idea_{uuid.uuid4().hex[:10]}", "user_id": user["user_id"],
+        "title": payload.title, "description": payload.description,
+        "status": "idea", "created_at": now_iso,
+    }
+    await db.ideas.insert_one(doc)
+    return IdeaOut(**doc)
+
+@api.delete("/ideas/{idea_id}")
+async def delete_idea(idea_id: str, user: dict = Depends(get_current_user)):
+    result = await db.ideas.delete_many({"id": idea_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Idea not found")
+    return {"ok": True}
+
+@api.post("/ideas/{idea_id}/promote")
+async def promote_idea(idea_id: str, user: dict = Depends(get_current_user)):
+    """Mark an idea as promoted (user has decided to build it)."""
+    await db.ideas.update_one(
+        {"id": idea_id, "user_id": user["user_id"]},
+        {"$set": {"status": "promoted"}},
+    )
+    return {"ok": True}
+
+
 # ---------- Billing (Stripe subscription) ----------
 class BillingCheckoutIn(BaseModel):
     origin_url: str

@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useAuth } from "@/lib/auth";
-import { Settings as SettingsIcon, LogOut, LayoutGrid, Package, DollarSign } from "lucide-react";
+import { Settings as SettingsIcon, LogOut, LayoutGrid, Package, DollarSign, Sparkles, Lightbulb } from "lucide-react";
 
 function initials(name = "") {
   return name
@@ -85,6 +85,34 @@ export default function AppShell({ children, active }) {
               <span className="inline-flex items-center gap-1.5">
                 <DollarSign className="h-3.5 w-3.5" />
                 Costs
+              </span>
+            </Link>
+            <Link
+              to="/skills"
+              data-testid="nav-skills-link"
+              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
+                active === "skills"
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+              }`}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5" />
+                Skills
+              </span>
+            </Link>
+            <Link
+              to="/ideas"
+              data-testid="nav-ideas-link"
+              className={`text-sm px-3 py-1.5 rounded-sm transition-colors duration-200 ${
+                active === "ideas"
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+              }`}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Lightbulb className="h-3.5 w-3.5" />
+                Ideas
               </span>
             </Link>
             <Link

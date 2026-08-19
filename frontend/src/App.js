@@ -19,6 +19,12 @@ import Pricing from "@/pages/Pricing";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import MyStack from "@/pages/MyStack";
 import CostCenter from "@/pages/CostCenter";
+import OwnershipCenter from "@/pages/OwnershipCenter";
+import PRDCenter from "@/pages/PRDCenter";
+import EvidenceCenter from "@/pages/EvidenceCenter";
+import LaunchCenter from "@/pages/LaunchCenter";
+import SkillsCenter from "@/pages/SkillsCenter";
+import IdeaPipeline from "@/pages/IdeaPipeline";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 
@@ -106,6 +112,66 @@ function AppRouter() {
           <ProtectedRoute>
             <LockedGate>
               <ProjectDetail />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/projects/:id/ownership"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <OwnershipCenter />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/projects/:id/documents"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <PRDCenter />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/projects/:id/evidence"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <EvidenceCenter />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/projects/:id/launch"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <LaunchCenter />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/skills"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <SkillsCenter />
+            </LockedGate>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/ideas"
+        element={
+          <ProtectedRoute>
+            <LockedGate>
+              <IdeaPipeline />
             </LockedGate>
           </ProtectedRoute>
         }
