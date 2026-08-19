@@ -29,8 +29,11 @@ import resend
 import stripe
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from cryptography.fernet import Fernet, InvalidToken
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+from llm_providers import get_llm_provider
 
 
 ROOT_DIR = Path(__file__).parent
@@ -52,10 +55,26 @@ GITHUB_OAUTH_SCOPE = os.environ.get("GITHUB_OAUTH_SCOPE", "public_repo,read:user
 GITHUB_API = "https://api.github.com"
 
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY", "")
-_fernet = Fernet(TOKEN_ENCRYPTION_KEY.encode()) if TOKEN_ENCRYPTION_KEY else None
+if not TOKEN_ENCRYPTION_KEY:
+    raise RuntimeError(
+        "TOKEN_ENCRYPTION_KEY is required. Generate one with: "
+        "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\" "
+        "and set it in backend/.env"
+    )
+_fernet = Fernet(TOKEN_ENCRYPTION_KEY.encode())
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 SCORING_MODEL = os.environ.get("SCORING_MODEL", "claude-haiku-4-5-20251001")
+
+# LLM provider — initialized lazily on first use so the server starts even if
+# the key is missing (errors surface on actual scan, not on boot).
+_llm_provider = None
+
+def _get_provider():
+    global _llm_provider
+    if _llm_provider is None:
+        _llm_provider = get_llm_provider()
+    return _llm_provider
 
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY") or "sk_test_emergent"
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
@@ -146,6 +165,11 @@ db = client[DB_NAME]
 
 app = FastAPI(title="AppNSaasBuilder API")
 api = APIRouter(prefix="/api")
+
+# Rate limiter — limits per-IP request frequency on expensive endpoints.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -806,9 +830,11 @@ def _extract_json(text: str) -> dict:
 
 
 async def _score_with_llm(signals: dict) -> dict:
-    """Ask Claude Haiku 4.5 for a 0–100 score, rationale, one-line summary, 3–6 next steps."""
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="LLM key not configured")
+    """Ask the configured LLM for a 0–100 score, rationale, one-line summary, 3–6 next steps.
+
+    Provider is selected via LLM_PROVIDER env var (emergent | openai).
+    The scoring prompt, JSON extraction, and sanity clamping are provider-agnostic.
+    """
     repo = signals["repo"]
     payload = {
         "name": repo.get("name"),
@@ -846,13 +872,11 @@ async def _score_with_llm(signals: dict) -> dict:
         "no-commits-in-12-weeks pushes it down."
     )
     prompt = "Project signals:\n" + json.dumps(payload, indent=2) + "\nReturn the JSON object now."
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"score-{uuid.uuid4().hex[:12]}",
-        system_message=system,
-    ).with_model("anthropic", SCORING_MODEL)
     try:
-        raw = await chat.send_message(UserMessage(text=prompt))
+        provider = _get_provider()
+        raw = await provider.complete(system, prompt)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("LLM call failed: %s", exc)
         raise HTTPException(status_code=502, detail="Scoring model failed") from exc
@@ -863,6 +887,9 @@ async def _score_with_llm(signals: dict) -> dict:
         raise HTTPException(status_code=502, detail="Scoring model returned invalid JSON") from exc
     # Sanity clamp.
     result["score"] = max(0, min(100, int(result.get("score", 0))))
+    # Stamp the provider + model so score history is comparable across migrations.
+    provider = _get_provider()
+    result["model"] = f"{provider.provider_name}:{provider.model_id}"
     steps = result.get("next_steps") or []
     if not isinstance(steps, list) or not (3 <= len(steps) <= 6):
         # Truncate / pad conservatively rather than fail — model usually gets this right.
@@ -1134,7 +1161,7 @@ async def _run_scan(project_id: str, user_id: str, scan_id: str) -> None:
             "project_id": project_id,
             "score": int(ai.get("score", 0)),
             "rationale": ai.get("rationale", ""),
-            "model": SCORING_MODEL,
+            "model": ai.get("model", SCORING_MODEL),
             "scored_at": datetime.now(timezone.utc).isoformat(),
         })
         old_steps = [s async for s in db.next_steps.find(
@@ -1193,7 +1220,8 @@ class ScanOut(BaseModel):
 
 
 @api.post("/projects/{project_id}/scan", response_model=ScanOut)
-async def scan_project(project_id: str, user: dict = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def scan_project(request: Request, project_id: str, user: dict = Depends(get_current_user)):
     """Kick off a scan in the background. Client should poll GET /api/scans/{id}."""
     proj = await _ensure_own_project(project_id, user["user_id"])
     # Guard: ensure GitHub is connected before scheduling — cheaper to fail here.
@@ -1955,7 +1983,7 @@ async def _job_rescan_stale_projects() -> None:
                 "project_id": proj["id"],
                 "score": int(ai.get("score", 0)),
                 "rationale": ai.get("rationale", ""),
-                "model": SCORING_MODEL,
+                "model": ai.get("model", SCORING_MODEL),
                 "scored_at": now_iso,
             })
             # Preserve done-flags and completed_at for identically-worded steps (F3).
