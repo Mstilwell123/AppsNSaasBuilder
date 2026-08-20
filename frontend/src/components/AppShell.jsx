@@ -11,7 +11,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useAuth } from "@/lib/auth";
 import {
   LayoutGrid, Package, DollarSign, Sparkles, Lightbulb, Briefcase,
-  Settings as SettingsIcon, LogOut, ShieldCheck, Rocket, FileText, FlaskConical,
+  Settings as SettingsIcon, LogOut,
 } from "lucide-react";
 
 function initials(name = "") {

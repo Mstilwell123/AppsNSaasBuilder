@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { Plus, Trash2, Lightbuln, ArrowRight } from "lucide-react";
+import { Plus, Trash2, Lightbulb, ArrowRight } from "lucide-react";
 
 export default function IdeaPipeline() {
   const [ideas, setIdeas] = useState([]);
@@ -55,7 +55,7 @@ export default function IdeaPipeline() {
 
       <Card className="bg-card border border-border rounded-sm p-6 mb-8">
         <div className="flex items-center gap-2 mb-4">
-          <Lightbuln className="h-4 w-4 text-muted-foreground" />
+          <Lightbulb className="h-4 w-4 text-muted-foreground" />
           <h2 className="font-display text-lg tracking-tight">New Idea</h2>
         </div>
         <Input placeholder="What's the idea?" value={form.title}
