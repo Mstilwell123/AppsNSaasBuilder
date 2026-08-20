@@ -176,7 +176,7 @@ export default function ProjectDetail() {
                 target="_blank"
                 rel="noreferrer noopener"
                 data-testid="project-detail-live-url"
-                className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground border border-border px-1.5 py-0.5 rounded-sm bg-background inline-flex items-center gap-1 transition-colors duration-200"
+                className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground border border-border px-2 py-0.5 rounded-md bg-card inline-flex items-center gap-1 transition-colors"
               >
                 Live <ExternalLink className="h-3 w-3" />
               </a>
@@ -186,7 +186,7 @@ export default function ProjectDetail() {
               target="_blank"
               rel="noreferrer noopener"
               data-testid="project-detail-github-link"
-              className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground border border-border px-1.5 py-0.5 rounded-sm bg-background inline-flex items-center gap-1 transition-colors duration-200"
+              className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground border border-border px-2 py-0.5 rounded-md bg-card inline-flex items-center gap-1 transition-colors"
             >
               <Github className="h-3 w-3" /> GitHub
             </a>
@@ -199,7 +199,7 @@ export default function ProjectDetail() {
             data-testid="project-detail-scan-button"
             disabled={scanning}
             onClick={() => setScanConfirmOpen(true)}
-            className="h-10 rounded-sm bg-background border border-border hover:bg-white/5 transition-colors duration-200"
+            className="h-9 rounded-lg bg-card border border-border hover:bg-secondary transition-colors"
           >
             <RefreshCw className={`h-3.5 w-3.5 mr-2 ${scanning ? "animate-spin" : ""}`} />
             {scanning ? "Scanning…" : hasScore ? "Re-scan" : "Run scan"}
@@ -208,7 +208,7 @@ export default function ProjectDetail() {
             variant="outline"
             data-testid="project-detail-delete-button"
             onClick={remove}
-            className="h-10 rounded-sm bg-background border border-border hover:bg-white/5 text-destructive hover:text-destructive transition-colors duration-200"
+            className="h-9 rounded-lg bg-card border border-border hover:bg-secondary text-destructive hover:text-destructive transition-colors"
           >
             <Trash2 className="h-3.5 w-3.5 mr-2" /> Stop tracking
           </Button>
@@ -218,25 +218,25 @@ export default function ProjectDetail() {
       {/* Sub-page links */}
       <div className="mt-4 flex items-center gap-2 flex-wrap" data-testid="project-detail-sub-links">
         <Link to={`/projects/${id}/ownership`} data-testid="project-detail-link-ownership"
-          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-md text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors">
           Ownership
         </Link>
         <Link to={`/projects/${id}/documents`} data-testid="project-detail-link-documents"
-          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-md text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors">
           PRD & Docs
         </Link>
         <Link to={`/projects/${id}/evidence`} data-testid="project-detail-link-evidence"
-          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-md text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors">
           QA & Security
         </Link>
         <Link to={`/projects/${id}/launch`} data-testid="project-detail-link-launch"
-          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-sm text-muted-foreground hover:text-foreground hover:border-white/40 transition-colors duration-200">
+          className="text-[10px] uppercase tracking-[0.14em] border border-border px-2.5 py-1.5 rounded-md text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors">
           Launch
         </Link>
       </div>
 
       <div className="mt-10 grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="md:col-span-2 bg-card border border-border rounded-sm p-8">
+        <Card className="md:col-span-2 bg-card border border-border rounded-xl p-6">
           <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Score</p>
           <div className="mt-2 flex items-end gap-4">
             <p
@@ -261,7 +261,7 @@ export default function ProjectDetail() {
           )}
         </Card>
 
-        <Card className="md:col-span-2 bg-card border border-border rounded-sm p-8">
+        <Card className="md:col-span-2 bg-card border border-border rounded-xl p-6">
           <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
             Commit activity — last 12 weeks
           </p>
@@ -293,7 +293,7 @@ export default function ProjectDetail() {
         </Card>
 
         <Card
-          className="md:col-span-4 bg-card border border-border rounded-sm p-8"
+          className="md:col-span-4 bg-card border border-border rounded-xl p-6"
           data-testid="project-detail-readiness-card"
         >
           <div className="flex items-baseline justify-between mb-4">
@@ -320,7 +320,7 @@ export default function ProjectDetail() {
         </Card>
 
         <Card
-          className="md:col-span-4 bg-card border border-border rounded-sm p-8"
+          className="md:col-span-4 bg-card border border-border rounded-xl p-6"
           data-testid="project-detail-score-history-card"
         >
           <div className="flex items-baseline justify-between mb-4">
@@ -346,7 +346,7 @@ export default function ProjectDetail() {
         </Card>
 
         <Card
-          className="md:col-span-4 bg-card border border-border rounded-sm p-8"
+          className="md:col-span-4 bg-card border border-border rounded-xl p-6"
           data-testid="project-detail-next-steps-card"
         >
           <div className="flex items-center justify-between gap-4 mb-4">
@@ -436,7 +436,7 @@ export default function ProjectDetail() {
       <AlertDialog open={scanConfirmOpen} onOpenChange={setScanConfirmOpen}>
         <AlertDialogContent
           data-testid="scan-confirm-dialog"
-          className="bg-card border border-border rounded-sm"
+          className="bg-card border border-border rounded-xl"
         >
           <AlertDialogHeader>
             <AlertDialogTitle>Re-scan this project?</AlertDialogTitle>

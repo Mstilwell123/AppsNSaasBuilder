@@ -74,7 +74,7 @@ export default function Settings() {
           Settings
         </h1>
         <p className="mt-3 text-sm text-muted-foreground max-w-lg">
-          Manage your profile and local password. Sign-in is handled by Google.
+          Manage your profile, billing, and password.
         </p>
       </div>
 
@@ -97,7 +97,7 @@ export default function Settings() {
                 <ReadField label="Email" value={user?.email || "—"} testId="settings-profile-email" />
                 <ReadField
                   label="Provider"
-                  value="Google"
+                  value="Email & Password"
                   testId="settings-profile-provider"
                 />
               </div>
